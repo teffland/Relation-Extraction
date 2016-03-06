@@ -84,46 +84,90 @@ def sentence_to_sdps(sentence, min_len=1, max_len=7, verbose=False):
     """
     noun_pairs = sentence_to_chunk_pairs(sentence)
     for X, Y in noun_pairs:
+        ### INCLUDE X AND Y AT ENDS WITH PLACEHOLDERS ###
         X_path = dependency_path_to_root(X)
         Y_path = dependency_path_to_root(Y)
-        common = find_common_ancestor(X_path, Y_path) # need nouns to find case (2)
-        # now we don't want nouns for assembly
-        X_path = X_path[1:]
-        Y_path = Y_path[1:]
+        common = find_common_ancestor(X_path, Y_path)
+    #     # now we don't want nouns for assembly
+    #     X_path = X_path[1:]
+    #     Y_path = Y_path[1:]
         # CASE (1)
         if not common:
             if verbose:
                 print("Bad SDP for sentence '%r' :: skipping" % sentence)
             continue
-            
         # CASE (2)
         elif X is common:
             sdp = []
-            for token in Y_path:        # looks like Y <- (...) <- X <- ...
-                if token is common:     # stop before X
-                    break
+            for token in Y_path:        # looks like (Y <- ... <- X <-) ...
                 sdp.append((token.text.lower(), token.dep_))
-            sdp = list(reversed(sdp))   # flip to get -> X -> (...) -> Y
+                if token is common:     # stop after X
+                    break
+            sdp = list(reversed(sdp))   # flip to get ... (-> X -> ... -> Y)
         elif Y is common:
             sdp = []
-            for token in X_path:        # looks like X <- ... <- Y 
-                if token is common:     # stop before Y
-                      break
+            for token in X_path:        # looks like (X <- ... <- Y <- ) ...
                 sdp.append((token.text.lower(), token.dep_))
-    
+                if token is common:     # stop after Y
+                      break
         # CASE (3)
         else:
             sdp = []
-            for token in (X_path):      # looks like X <- (... <- Z <-) ...
+            for token in (X_path):      # looks like (X <- ... <- Z <-) ...
                 sdp.append((token.text.lower(), token.dep_))
                 if token is common:     # keep Z this time
                     break
             ysdp = []                   # need to keep track of seperate, then will reverse and extend later
             for token in Y_path:        # looks like (Y <- ... <-) Z <- ... 
-                if token is common:
+                if token is common:     # don't keep Z from this side
                     break
                 ysdp.append((token.text.lower(), token.dep_))
-            sdp.extend(list(reversed(ysdp))) # looks like X <- (... <- Z -> ... ) -> Y
+            sdp.extend(list(reversed(ysdp))) # looks like (X <- ... <- Z -> ... ) -> Y)
+        # convert endpoints of the paths to placeholder X and Y tokens
+        sdp[0] = (u'<X>', sdp[0][1])
+        sdp[-1] = (u'<Y>', sdp[-1][1])
+
+        ### CASE WHERE WE DONT INCLUDE X AND Y IN PATH.  THIS CAN LEAD TO EMPTY PATHS ###
+        # X_path = dependency_path_to_root(X)
+        # Y_path = dependency_path_to_root(Y)
+        # common = find_common_ancestor(X_path, Y_path) # need nouns to find case (2)
+        # # now we don't want nouns for assembly
+        # X_path = X_path[1:]
+        # Y_path = Y_path[1:]
+        # # CASE (1)
+        # if not common:
+        #     if verbose:
+        #         print("Bad SDP for sentence '%r' :: skipping" % sentence)
+        #     continue
+            
+        # # CASE (2)
+        # elif X is common:
+        #     sdp = []
+        #     for token in Y_path:        # looks like Y <- (...) <- X <- ...
+        #         if token is common:     # stop before X
+        #             break
+        #         sdp.append((token.text.lower(), token.dep_))
+        #     sdp = list(reversed(sdp))   # flip to get -> X -> (...) -> Y
+        # elif Y is common:
+        #     sdp = []
+        #     for token in X_path:        # looks like X <- ... <- Y 
+        #         if token is common:     # stop before Y
+        #               break
+        #         sdp.append((token.text.lower(), token.dep_))
+    
+        # # CASE (3)
+        # else:
+        #     sdp = []
+        #     for token in (X_path):      # looks like X <- (... <- Z <-) ...
+        #         sdp.append((token.text.lower(), token.dep_))
+        #         if token is common:     # keep Z this time
+        #             break
+        #     ysdp = []                   # need to keep track of seperate, then will reverse and extend later
+        #     for token in Y_path:        # looks like (Y <- ... <-) Z <- ... 
+        #         if token is common:
+        #             break
+        #         ysdp.append((token.text.lower(), token.dep_))
+        #     sdp.extend(list(reversed(ysdp))) # looks like X <- (... <- Z -> ... ) -> Y
             
         if len(sdp) < min_len or len(sdp) > max_len:
             continue                    # skip ones that are too short

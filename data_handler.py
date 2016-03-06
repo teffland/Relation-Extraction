@@ -167,7 +167,14 @@ class DataHandler(object):
         if index in int2vocab:
             return int2vocab[index]
         else:
-            return vocab[-1] # <OOV>
+            return int2vocab[-1] # <OOV>
+
+    def _vocab_to_int(self, vocab, vocab2int):
+        """ handle index conversion with fault tolerance """
+        if vocab in vocab2int:
+            return vocab2int[vocab]
+        else:
+            return vocab2int[-1] # <OOV>
 
     def sequence_to_sentence(self, sequence, len_=10e5, show_dep=False, delim=" "):
         # does the sequence contain the dependencies also?
@@ -206,6 +213,34 @@ class DataHandler(object):
         else:
             return [ self.sequence_to_sentence(sequence, show_dep=show_dep, delim=delim) 
                     for sequence in sequences ]
+
+    def sentence_to_sequence(self, sentence, len_=10e5, show_dep=False, delim=" "):
+        if isinstance(sentence[0], unicode, str): # this is just a sinlg elist not list of lists
+            return [ self._vocab_to_int(x, self._vocab2int) 
+                                   for (i, x) in enumerate(sentence) 
+                                   if i < len_ ]
+
+        elif set([len(d) for d in sentence]) == set([2]): # list of lists of pairs of ints
+            return [ [self._vocab_to_int(x[0], self._vocab2int)
+                    self._vocab_to_int(x[1], self._dep2int)]
+                    for i, x in enumerate(sentence) ]
+
+        elif set([len(d) for d in sentence]) == set([1]): # list of list of ints
+            return [ self._vocab_to_int(x, self._vocab2int) 
+                             for i, x in enumerate(sentence) 
+                             if i < len_ ]
+        else:
+            print("Not sure what to make of sentence %r" % sentence)
+
+    def sentences_to_sequences(self, sentences, lens=None):
+        # is expecting a list of lists of lists eg, a list of paths, 
+        # where a path is a list of lists of tokens and deps
+        if lens:
+            return [ self.sentence_to_sequence(sentence, len_) 
+                    for (sentence, len_) in zip(sentences, lens) ]
+        else:
+            return [ self.sentence_to_sequence(sentence) 
+                    for sentence in sentences ]
 
     def readable_data(self, valid=False, show_dep=False):
         if valid:

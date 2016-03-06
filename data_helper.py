@@ -8,7 +8,7 @@ from spacy import English
 
 """Constant defs"""
 nlp = English()
-split_delims = [' ', '.',';',':', '%', '"', '$', '^'] # ','
+split_delims = [' ', '.',';',':', '%', '"', '$', '^', ',']
 label2int = dict() # keep running dictionary of labels
 
 """Function Defs"""
@@ -57,7 +57,7 @@ def convert_raw_x(line):
     return (s, e1_index, e2_index)
     
 label2int = dict() # keep running dictionary of labels
-def convert_raw_y(label_line):
+def convert_raw_y(label_line, label2int):
     """Convert raw line of semeval labels into a useable form (ints)"""
 #     print("Raw Y: %r" % line[:])
     line = label_line.strip()
@@ -104,16 +104,16 @@ def load_semeval_data():
     
     return train, valid
 
+def sentence_to_indices(sentence, vocab2int_dict):
+    """Convert ONE spacy sentences to list of indices in the vocab"""
+    return [ vocab2int_dict[token.text] for token in sentence ]
+
 def sentences_to_indices(sentences, vocab2int_dict):
     """Convert list of spacy sentences to list of indices in the vocab"""
     data = []
     for sentence in sentences:
-        data.append([ vocab2int_dict[token.text] for token in sentence ])
+        data.append(sentence_to_indices(sentence, vocab2int_dict))
     return data
-
-def sentence_to_indices(sentence, vocab2int_dict):
-    """Convert ONE spacy sentences to list of indices in the vocab"""
-    return [ vocab2int_dict[token.text] for token in sentence ]
 
 def create_vocab_from_data(sentences, vocab_limit=5000, dep=False, filter_oov=True, print_oov=False):
     """Create a vocab index, inverse index, and multinomial distribution over tokens from a list of spacy sentences
@@ -155,7 +155,15 @@ def dependency_path_to_root(token):
     # dep_path.append(token.head) # add the root node
     return dep_path
 
-def convert_semeval_to_sdps(data, labels, vocab2int, dep2int, int2label, label2int, 
+def find_common_ancestor(e1_path, e2_path):
+    """Loop through both dep paths and return common ancestor"""
+    for t1 in e1_path:
+        for t2 in e2_path:
+            if t1.idx ==  t2.idx:
+                return t1
+    return None
+
+def convert_semeval_to_sdps(data, labels, vocab2int, dep2int, int2label, label2int, int2vocab,
                             include_deps=False, include_reverse=True, print_check=False):
     """Conver list of (spacy, e1 index, e2 index) into list of lists of shortest dependency path sequences
     
@@ -171,13 +179,7 @@ def convert_semeval_to_sdps(data, labels, vocab2int, dep2int, int2label, label2i
         # find common ancestor for both e1 and e2
         # just loop over both, checking if inner is in outer
         # the first token meeting this is the least common ancestor
-        common_ancestor = None
-        for t1 in e1_path:
-            for t2 in e2_path:
-                if t1 is t2:
-#                     print(t1, t2)
-                    common_ancestor = t1
-                    break
+        common_ancestor = find_common_ancestor(e1_path, e2_path)
         if common_ancestor is  None:
             print("ERROR: This sentence has no common dependency ancestor.  It was probably parsed incorrectly. SKIPPING")
             print(sentence)
@@ -186,34 +188,40 @@ def convert_semeval_to_sdps(data, labels, vocab2int, dep2int, int2label, label2i
             continue
         # assert common_ancestor is not None, "Didn't even find the common root node?"
 
-        sdp = []
+        fsdp = []
         for token in e1_path:
             if include_deps:
-                sdp.append((vocab2int[token.text], dep2int[token.dep_]))
+                fsdp.append((vocab2int[token.text], dep2int[token.dep_]))
             else:
-                sdp.append(vocab2int[token.text])
-            if token is common_ancestor:
+                fsdp.append(vocab2int[token.text])
+            if token.idx == common_ancestor.idx:
                 break
-        temp_sdp = []
+        bsdp = []
         for token in e2_path:
             # this time go up to BUT not including common acestor
-            if token is common_ancestor:
+            if token.idx == common_ancestor.idx:
                 break
             if include_deps:
-                temp_sdp.append((vocab2int[token.text], dep2int[token.dep_]))
+                bsdp.append((vocab2int[token.text], dep2int[token.dep_]))
             else:
-                temp_sdp.append(vocab2int[token.text])
+                bsdp.append(vocab2int[token.text])
         
-        sdp.extend(list(reversed(temp_sdp))) # reverse the order since we traversed right to left for e2
+        sdp = fsdp + list(reversed(bsdp)) # reverse the order since we traversed right to left for e2
         sdps.append(sdp)
         new_labels.append(labels[i])
         if include_reverse:
             sdps.append(list(reversed(sdp)))
             new_labels.append(lookup_inverse_relation(labels[i], int2label, label2int))
         if print_check:
+            print(sentence)
             print("%r (%i, %i)" % (list(sentence), e1_idx, e2_idx)) 
             print("%r" % [int2vocab[idx] for idx in sdp])
             print("%r" % sdp)
+            print("%r" % common_ancestor)
+            print("%r, %r" % (fsdp, [int2vocab[e] for e in fsdp]))
+            print("%r, %r" % (bsdp, [int2vocab[e] for e in bsdp]))
+            print("%r, %r" % (e1_path, [e.idx for e in e1_path]))
+            print("%r, %r" % (e2_path, [e.idx for e in e2_path]))
             if include_reverse:
                 print("%r" % [int2vocab[idx] for idx in reversed(sdp)])
                 print("%r\n" % list(reversed(sdp)))
