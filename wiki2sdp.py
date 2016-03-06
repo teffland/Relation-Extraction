@@ -199,7 +199,7 @@ def is_ok_sdp(sdp, int2vocab, oov_percent=75):
     too_many = int((oov_percent/100.0)*len(sdp['path']))
     if oov_count > too_many:
         return False
-    if not sdp:
+    if not sdp['path'] or not sdp['target']:
         return False
     return True
 
