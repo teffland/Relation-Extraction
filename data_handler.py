@@ -167,14 +167,14 @@ class DataHandler(object):
         if index in int2vocab:
             return int2vocab[index]
         else:
-            return int2vocab[-1] # <OOV>
+            return int2vocab.values()[-1] # <OOV>
 
     def _vocab_to_int(self, vocab, vocab2int):
         """ handle index conversion with fault tolerance """
         if vocab in vocab2int:
             return vocab2int[vocab]
         else:
-            return vocab2int[-1] # <OOV>
+            return vocab2int.values()[-1] # <OOV>
 
     def sequence_to_sentence(self, sequence, len_=10e5, show_dep=False, delim=" "):
         # does the sequence contain the dependencies also?
@@ -221,7 +221,7 @@ class DataHandler(object):
                                    if i < len_ ]
 
         elif set([len(d) for d in sentence]) == set([2]): # list of lists of pairs of ints
-            return [ [self._vocab_to_int(x[0], self._vocab2int)
+            return [ [self._vocab_to_int(x[0], self._vocab2int),
                     self._vocab_to_int(x[1], self._dep2int)]
                     for i, x in enumerate(sentence) ]
 

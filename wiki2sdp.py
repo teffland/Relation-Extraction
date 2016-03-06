@@ -210,10 +210,10 @@ def create_vocab_from_data(sentences, vocab_limit=None,
     
     # create the vocab in most common order
     # include an <OOV> token and make it's count the sum of all elements that didn't make the cut
-    vocab = [ x[0] for x in counts][:vocab_limit] + [u'<OOV>']
+    vocab = [ x[0] for x in counts][:vocab_limit] + [u'<OOV>', u'<X>', u'<Y>']
     if not oov_count and vocab_limit < len(vocab): # if we didn't specify a psuedocount, take the real one... probably a bad idea
         oov_count = sum(map(lambda x:x[1], counts[vocab_limit:]))
-    freqs = [ x[1] for x in counts ][:vocab_limit] + [oov_count]
+    freqs = [ x[1] for x in counts ][:vocab_limit] + [oov_count]*3
     # calculate the empirical distribution
     unigram_distribution = list(np.array(freqs) / np.sum(freqs, dtype=np.float32))
     # create index and inverted index
