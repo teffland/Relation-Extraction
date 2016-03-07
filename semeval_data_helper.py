@@ -214,6 +214,12 @@ def load_semeval_data():
     text = open(test_txt_file, 'r').readlines()
     for line in text:
         send, sdp, target = line_to_data(line)
+        if not (sent and sdp and target):
+            print("Skipping this one... %r" % text_line)
+            print(sent, sdp, target, label)
+            sent = [u'<OOV>']
+            sdp = [[0,0]]
+            target= [0,0]
         test['raws'].append(line)
         test['sents'].append(sent)
         test['sdps'].append(sdp)
