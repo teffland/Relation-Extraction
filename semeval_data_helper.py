@@ -219,7 +219,7 @@ def load_semeval_data():
             print(sent, sdp, target, label)
             sent = [u'<OOV>']
             sdp = [[0,0]]
-            target= [0,0]
+            target= [[0,0]]
         test['raws'].append(line)
         test['sents'].append(sent)
         test['sdps'].append(sdp)
