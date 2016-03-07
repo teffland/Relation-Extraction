@@ -215,23 +215,25 @@ class DataHandler(object):
                     for sequence in sequences ]
 
     def sentence_to_sequence(self, sentence, len_=10e5, show_dep=False, delim=" "):
-        print(sentence)
-        if isinstance(sentence[0], (unicode, str)): # this is just a sinlg elist not list of lists
-            return [ self._vocab_to_int(x, self._vocab2int) 
-                                   for (i, x) in enumerate(sentence) 
-                                   if i < len_ ]
+        try:
+            if isinstance(sentence[0], (unicode, str)): # this is just a sinlg elist not list of lists
+                return [ self._vocab_to_int(x, self._vocab2int) 
+                                       for (i, x) in enumerate(sentence) 
+                                       if i < len_ ]
 
-        elif set([len(d) for d in sentence]) == set([2]): # list of lists of pairs of ints
-            return [ [self._vocab_to_int(x[0], self._vocab2int),
-                    self._vocab_to_int(x[1], self._dep2int)]
-                    for i, x in enumerate(sentence) ]
+            elif set([len(d) for d in sentence]) == set([2]): # list of lists of pairs of ints
+                return [ [self._vocab_to_int(x[0], self._vocab2int),
+                        self._vocab_to_int(x[1], self._dep2int)]
+                        for i, x in enumerate(sentence) ]
 
-        elif set([len(d) for d in sentence]) == set([1]): # list of list of ints
-            return [ self._vocab_to_int(x, self._vocab2int) 
-                             for i, x in enumerate(sentence) 
-                             if i < len_ ]
-        else:
-            print("Not sure what to make of sentence %r" % sentence)
+            elif set([len(d) for d in sentence]) == set([1]): # list of list of ints
+                return [ self._vocab_to_int(x, self._vocab2int) 
+                                 for i, x in enumerate(sentence) 
+                                 if i < len_ ]
+            else:
+                print("Not sure what to make of sentence %r" % sentence)
+        except:
+            print("excepted sentence: ", sentence)
 
     def sentences_to_sequences(self, sentences, lens=None):
         # is expecting a list of lists of lists eg, a list of paths, 
