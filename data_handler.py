@@ -215,7 +215,7 @@ class DataHandler(object):
                     for sequence in sequences ]
 
     def sentence_to_sequence(self, sentence, len_=10e5, show_dep=False, delim=" "):
-        if isinstance(sentence[0], unicode, str): # this is just a sinlg elist not list of lists
+        if isinstance(sentence[0], (unicode, str)): # this is just a sinlg elist not list of lists
             return [ self._vocab_to_int(x, self._vocab2int) 
                                    for (i, x) in enumerate(sentence) 
                                    if i < len_ ]
