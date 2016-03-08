@@ -45,6 +45,14 @@ def convert_raw_x(line, verbose=False):
     e1 = s[e1_index]
     e2 = s[e2_index]
     return (s, e1, e2)
+def smart_token_to_text(token, lower=True):
+    """Convet spacy token to lowercase text and simplify numbers and punctuation"""
+    text = token.text.lower() if lower else token.text
+    if token.is_punct:
+        text = u'<PUNCT>'
+    if token.like_num:
+        text = u'<NUM>'
+    return text
 
 def dependency_path_to_root(token):
     """Traverse up the dependency tree. Include the token we are tracing"""
@@ -87,28 +95,28 @@ def convert_nominals_to_sdp(X, Y, verbose=False):
     elif X is common:
         sdp = []
         for token in Y_path:        # looks like (Y <- ... <- X <-) ...
-            sdp.append((token.text.lower(), token.dep_))
+            sdp.append((smart_token_to_text(token), token.dep_))
             if token is common:     # stop after X
                 break
         sdp = list(reversed(sdp))   # flip to get ... (-> X -> ... -> Y)
     elif Y is common:
         sdp = []
         for token in X_path:        # looks like (X <- ... <- Y <- ) ...
-            sdp.append((token.text.lower(), token.dep_))
+            sdp.append((smart_token_to_text(token), token.dep_))
             if token is common:     # stop after Y
                   break
     # CASE (3)
     else:
         sdp = []
         for token in (X_path):      # looks like (X <- ... <- Z <-) ...
-            sdp.append((token.text.lower(), token.dep_))
+            sdp.append((smart_token_to_text(token), token.dep_))
             if token is common:     # keep Z this time
                 break
         ysdp = []                   # need to keep track of seperate, then will reverse and extend later
         for token in Y_path:        # looks like (Y <- ... <-) Z <- ... 
             if token is common:     # don't keep Z from this side
                 break
-            ysdp.append((token.text.lower(), token.dep_))
+            ysdp.append((smart_token_to_text(token), token.dep_))
         sdp.extend(list(reversed(ysdp))) # looks like (X <- ... <- Z -> ... ) -> Y)
     # convert endpoints of the paths to placeholder X and Y tokens
     sdp[0] = (u'<X>', sdp[0][1])
@@ -121,7 +129,7 @@ def post_process_sdp(sdp):
     """ Filter out unwanted sdps structure """
     if not sdp:
         return sdp
-    bad_tokens = set([',', '.', '-', '(', ')', '&', '*', '_', '%', '!', '?', '/', '<', '>', '\\', '[', ']', '{', '}', '"', "'"])
+    bad_tokens = set([u'<PUNCT>']) #set([',', '.', '-', '(', ')', '&', '*', '_', '%', '!', '?', '/', '<', '>', '\\', '[', ']', '{', '}', '"', "'"])
     sdp['path'] = [x for x in sdp['path'] if x[0] not in bad_tokens]
     return sdp
 
@@ -176,14 +184,15 @@ def load_semeval_data():
     ### TRAINING AND VALIDATION DATA ###
     training_txt_file = 'SemEval2010_task8_all_data/SemEval2010_task8_training/TRAIN_FILE.TXT'
     validation_index = 8000 - 891# len data - len valid - 1 since we start at 0
-    train = {'raws':[], 'sents':[], 'sdps':[], 'targets':[], 'labels':[]}
-    valid = {'raws':[], 'sents':[], 'sdps':[], 'targets':[], 'labels':[]}
+    train = {'raws':[], 'sents':[], 'sdps':[], 'targets':[], 'labels':[], 'comments':[]}
+    valid = {'raws':[], 'sents':[], 'sdps':[], 'targets':[], 'labels':[], 'comments':[]}
     text = open(training_txt_file, 'r').readlines()
     label2int = dict() # keep running dictionary of labels
     assert len(text) // 4 == 8000
     for cursor in range(len(text) // 4): # each 4 lines is a datum
             text_line = text[4*cursor]
             label_line = text[4*cursor +1]
+            comment = text[4*cursor + 2]
             sent, sdp, target = line_to_data(text_line)
             label = line_to_label(label_line, label2int)
 #             print(sent, sdp, target, label)
@@ -197,12 +206,14 @@ def load_semeval_data():
                 train['sdps'].append(sdp)
                 train['targets'].append(target)
                 train['labels'].append(label)
+                train['comments'].append(comment)
             else:
                 valid['raws'].append(text_line)
                 valid['sents'].append(sent)
                 valid['sdps'].append(sdp)
                 valid['targets'].append(target)
                 valid['labels'].append(label)
+                valid['comments'].append(comment)
     int2label = {i:label for (label, i) in label2int.items()}
     print("Num training: %i" % len(train['labels']))
     print("Num valididation: %i" % len(valid['labels']))
@@ -213,13 +224,13 @@ def load_semeval_data():
     test = {'raws':[], 'sents':[], 'sdps':[], 'targets':[]}
     text = open(test_txt_file, 'r').readlines()
     for line in text:
-        send, sdp, target = line_to_data(line)
+        sent, sdp, target = line_to_data(line)
         if not (sent and sdp and target):
             print("Skipping this one... %r" % text_line)
             print(sent, sdp, target, label)
-            sent = [u'<OOV>']
-            sdp = [[0,0]]
-            target= [[0,0]]
+            sent = [nlp(u'<OOV>')]*3
+            sdp = [[u'<OOV>',u'<OOV>']]
+            target= [u'<OOV>',u'<OOV>']
         test['raws'].append(line)
         test['sents'].append(sent)
         test['sdps'].append(sdp)

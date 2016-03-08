@@ -16,6 +16,8 @@ import json
 import click
 from time import time
 
+import semeval_data_helper as sdh
+
 from spacy.en import English
 nlp = English()
 
@@ -183,7 +185,7 @@ def sentence_to_sdps(sentence, min_len=1, max_len=7, verbose=False):
             continue                    # skip ones that are too short
         yield {'path': sdp, 'target':(X.text.lower(), Y.text.lower())}
 
-def create_vocab_from_data(sentences, vocab_limit=None, 
+def create_vocab_from_data(sentences, important_sentences=[], vocab_limit=None, 
                            min_count=None, dep=False, 
                            filter_oov=False, print_oov=False,
                            oov_count=1):
@@ -202,7 +204,25 @@ def create_vocab_from_data(sentences, vocab_limit=None,
                     counts[token.text.lower()] += 1
                 elif print_oov:
                     print("Token %r is oov" % token.text.lower())
-    
+     # if we specify important sentences, vocab limits and min frequencies don't apply
+    # that way we have total vocab coverage over these sentences
+    if important_sentences:
+        important_vocab = set()
+        for sentence in important_sentences:
+            for token in sentence:
+                if dep:
+                    counts[token.dep_] += 1
+                    important_vocab.add(token.dep_)
+                else:
+                    if filter_oov and not token.is_oov and token.text not in [u' ', u'\n\n']:
+                        counts[token.text.lower()] += 1
+                        important_vocab.add(token.text.lower())
+                    elif not filter_oov and token.text not in [u' ', u'\n\n']:
+                        counts[token.text.lower()] += 1
+                        important_vocab.add(token.text.lower())
+                    elif print_oov:
+                        print("Token %r is oov" % token.text.lower())
+
     counts = counts.most_common()
     if not (vocab_limit or min_count):
         vocab_limit = len(counts)
@@ -217,7 +237,14 @@ def create_vocab_from_data(sentences, vocab_limit=None,
             if count < min_count:
                 vocab_limit = i
                 break
-    
+    # now if we have important sentences
+    # we need to add the missing vocabs back to the vocab and increase the size
+    if important_sentences:
+        missing_important = [count for count in counts[vocab_limit:] if count[0] in important_vocab]
+        counts = counts[:vocab_limit] + missing_important
+        vocab_limit = len(counts)
+        print("Kept %i missing important words" % len(missing_important) )
+
     # create the vocab in most common order
     # include an <OOV> token and make it's count the sum of all elements that didn't make the cut
     vocab = [ x[0] for x in counts][:vocab_limit] + [u'<OOV>', u'<X>', u'<Y>', u'<NUM>', u'<PUNCT>']
@@ -277,7 +304,7 @@ def sec_to_hms(seconds):
 @click.option('-m', '--min_count', default=5, help="Minimum count of a vocab to keep")
 @click.option('-v', '--vocab_limit', default=None, help='Number of most common token types to keep. Trumps min_count')
 @click.option('-i', '--infile', default='data/shuffled.en.tok.txt', help='Name of Mohammeds parsed wikidump sentences file')
-@click.option('-o', '--outfile', default='data/shuffled_wiki_sdp_', help='Outfile prefix')
+@click.option('-o', '--outfile', default='data/semeval_wiki_sdp_', help='Outfile prefix')
 @click.option('--minlen', default=1, help="Minimum length of the dependency path not including nominals")
 @click.option('--maxlen', default=7, help="Maximum length of the dependency path not including nominals")
 def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen):
@@ -291,32 +318,50 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen)
     
     start = time()
     print("="*80)
-    print("Analyzing %i sentences" % num_sentences)
+    print("Analyzing %i sentences + the Semeval training sentences" % num_sentences)
     print("="*80)
 
     print("(%i:%i:%i) Reading Data..." % sec_to_hms(time()-start))
-    sentences = []
+    wiki_sentences = []
     for i, line in enumerate(open(FLAGS['sentence_file'], 'r')):
         if i > FLAGS['num_sentences']:
             break
-        sentences.append(nlp(unicode(line.strip())))
+        wiki_sentences.append(nlp(unicode(line.strip())))
+        
+    train, valid, test, label2int, int2label = sdh.load_semeval_data()
+    sem_sentences = [ sent[0] for sent in train['sents']+valid['sents']+test['sents'] ]
 
     print("(%i:%i:%i) Creating vocab..." % sec_to_hms(time()-start))
-    vocab, vocab2int, int2vocab, vocab_dist = create_vocab_from_data(sentences,
+    vocab, vocab2int, int2vocab, vocab_dist = create_vocab_from_data(wiki_sentences,
+                                                                 important_sentences=sem_sentences,
                                                                  vocab_limit=FLAGS['vocab_limit'],
                                                                  min_count=FLAGS['min_count'],
                                                                  dep=False,
                                                                  oov_count=1)
-    dep_vocab, dep2int, int2dep, dep_dist = create_vocab_from_data(sentences,
-                                                                 vocab_limit=None,
+    dep_vocab, dep2int, int2dep, dep_dist = create_vocab_from_data(wiki_sentences,
+                                                                 important_sentences=sem_sentences,                                                                 vocab_limit=None,
                                                                  min_count=0,
                                                                  dep=True,
                                                                  oov_count=1)
+
+    sem_data = [{'path':sdp, 'target':target} for (sdp, target)
+                in zip(train['sdps']+valid['sdps'], train['targets']+valid['targets'])]
     # write out the data
     print("(%i:%i:%i) Writing data..." % sec_to_hms(time()-start))
     sdp_count = 0
     with open(FLAGS['out_prefix'] + str(FLAGS['num_sentences']), 'w') as outfile:
-        for sentence in sentences:
+        # semeval
+        for sdp in sem_data: # doesn't include semeval test sentences
+            # convert from tokens to indices
+            post_process_sdp(sdp)
+            sdp['path'] = [ (vocab2idx(x[0], vocab2int), vocab2idx(x[1], dep2int)) for x in sdp['path'] ]
+            sdp['target'] = [ vocab2idx(sdp['target'][0], vocab2int), vocab2idx(sdp['target'][1], vocab2int) ]
+            if is_ok_sdp(sdp, int2vocab):
+                sdp_count += 1
+                # write out the dict as json line
+                outfile.write(json.dumps(sdp) + '\n')
+        # wiki
+        for sentence in wiki_sentences:
             for sdp in sentence_to_sdps(sentence, min_len=minlen, max_len=maxlen):
                 # convert from tokens to indices
                 post_process_sdp(sdp)
@@ -326,6 +371,7 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen)
                     sdp_count += 1
                     # write out the dict as json line
                     outfile.write(json.dumps(sdp) + '\n')
+
 
     # write out the vocab file
     print("(%i:%i:%i) Writing vocab..." % sec_to_hms(time()-start))

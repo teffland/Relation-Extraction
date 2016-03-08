@@ -16,6 +16,8 @@ import json
 import click
 from time import time
 
+import semeval_data_helper as sdh
+
 from spacy.en import English
 nlp = English()
 
@@ -274,15 +276,15 @@ def sec_to_hms(seconds):
 
 @click.command()
 @click.option('-n', '--num_sentences', default=10000, help="Number of sentences to use")
-@click.option('-m', '--min_count', default=5, help="Minimum count of a vocab to keep")
+@click.option('-m', '--min_count', default=0, help="Minimum count of a vocab to keep")
 @click.option('-v', '--vocab_limit', default=None, help='Number of most common token types to keep. Trumps min_count')
-@click.option('-i', '--infile', default='data/shuffled.en.tok.txt', help='Name of Mohammeds parsed wikidump sentences file')
-@click.option('-o', '--outfile', default='data/shuffled_wiki_sdp_', help='Outfile prefix')
+@click.option('-i', '--infile', default='SemEval2010_task8_all_data/SemEval2010_task8_training/TRAIN_FILE.TXT', help='Name of semeval file')
+@click.option('-o', '--outfile', default='data/semeval_train_sdp_', help='Outfile prefix')
 @click.option('--minlen', default=1, help="Minimum length of the dependency path not including nominals")
 @click.option('--maxlen', default=7, help="Maximum length of the dependency path not including nominals")
 def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen):
     FLAGS = {
-        'num_sentences': num_sentences, # max is 31661479
+        'num_sentences': min(num_sentences, 8000), # max is 31661479
         'min_count':min_count,        
         'vocab_limit':vocab_limit,
         'sentence_file':infile,
@@ -295,11 +297,9 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen)
     print("="*80)
 
     print("(%i:%i:%i) Reading Data..." % sec_to_hms(time()-start))
-    sentences = []
-    for i, line in enumerate(open(FLAGS['sentence_file'], 'r')):
-        if i > FLAGS['num_sentences']:
-            break
-        sentences.append(nlp(unicode(line.strip())))
+
+    train, valid, test, label2int, int2label = sdh.load_semeval_data()
+    sentences = [ sent[0] for sent in train['sents']+valid['sents']+test['sents'] ]
 
     print("(%i:%i:%i) Creating vocab..." % sec_to_hms(time()-start))
     vocab, vocab2int, int2vocab, vocab_dist = create_vocab_from_data(sentences,
@@ -314,18 +314,19 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen)
                                                                  oov_count=1)
     # write out the data
     print("(%i:%i:%i) Writing data..." % sec_to_hms(time()-start))
+    all_data = [{'path':sdp, 'target':target} for (sdp, target)
+                in zip(train['sdps']+valid['sdps'], train['targets']+valid['targets'])]
     sdp_count = 0
     with open(FLAGS['out_prefix'] + str(FLAGS['num_sentences']), 'w') as outfile:
-        for sentence in sentences:
-            for sdp in sentence_to_sdps(sentence, min_len=minlen, max_len=maxlen):
-                # convert from tokens to indices
-                post_process_sdp(sdp)
-                sdp['path'] = [ (vocab2idx(x[0], vocab2int), vocab2idx(x[1], dep2int)) for x in sdp['path'] ]
-                sdp['target'] = [ vocab2idx(sdp['target'][0], vocab2int), vocab2idx(sdp['target'][1], vocab2int) ]
-                if is_ok_sdp(sdp, int2vocab):
-                    sdp_count += 1
-                    # write out the dict as json line
-                    outfile.write(json.dumps(sdp) + '\n')
+        for sdp in all_data:
+            # convert from tokens to indices
+            post_process_sdp(sdp)
+            sdp['path'] = [ (vocab2idx(x[0], vocab2int), vocab2idx(x[1], dep2int)) for x in sdp['path'] ]
+            sdp['target'] = [ vocab2idx(sdp['target'][0], vocab2int), vocab2idx(sdp['target'][1], vocab2int) ]
+            if is_ok_sdp(sdp, int2vocab):
+                sdp_count += 1
+                # write out the dict as json line
+                outfile.write(json.dumps(sdp) + '\n')
 
     # write out the vocab file
     print("(%i:%i:%i) Writing vocab..." % sec_to_hms(time()-start))

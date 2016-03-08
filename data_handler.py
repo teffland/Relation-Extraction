@@ -97,7 +97,7 @@ class DataHandler(object):
                     tensor[i, :len(list_), j] = [ x[j] for x in list_ ]
             return tensor, lengths
     
-    def _generate_batch(self, offset, batch_size, inputs, targets, neg_per=None):
+    def _generate_batch(self, offset, batch_size, inputs, targets, neg_per=None, neg_level=1):
         """Expects the data as list of lists of indices
 
         Converts them to matrices of indices, lang model labels, and lengths"""
@@ -119,12 +119,25 @@ class DataHandler(object):
             neg_targets = []
             for i, seq in enumerate(inputs):
                 for neg in range(neg_per):
-                    rand_idx = int(random.uniform(0, len(seq)))
-                    sample = self._sample_distribution(self._vocab_dist)
-#                     print(rand_idx)
                     neg_seq = seq[:]
-#                     print(neg_seq)
-                    neg_seq[rand_idx][0] = sample
+                    # break sticks to split up noise into vocab and deps
+                    # pick an int that's less that seq - <X> - <Y>
+                    # but make sure that's not more than we asked for
+                    num_v = min(int(random.uniform(0, max(len(seq)-2, 1))), neg_level)
+                    num_d = neg_level - num_v
+                    if num_v: # choice breaks if zero
+                        v_rand_idx = np.random.choice(range(1, len(seq)-1), size=num_v)
+                        v_noise = np.random.choice(range(len(self._vocab)), 
+                                                   size=num_v, p=self._vocab_dist)
+                        for j, v in zip(v_rand_idx, v_noise):
+                            neg_seq[j][0] = v
+                    d_rand_idx = np.random.choice(range(0, len(seq)), size=num_d)
+                    d_noise = np.random.choice(range(len(self._dep_vocab)), 
+                                               size=num_d, p=self._dep_dist)
+                    # do the replacements
+                    
+                    for j, d in zip(d_rand_idx, d_noise):
+                        neg_seq[j][1] = d
                     negatives.append(neg_seq)
                     neg_targets.append(targets[i])
             neg_mat, neg_len = self._sequences_to_tensor(negatives)
@@ -139,13 +152,32 @@ class DataHandler(object):
             all_labels = labels.astype(np.int32)
             all_lengths = len_vec.astype(np.int32)
         return all_inputs, all_targets, all_labels, all_lengths
+
+    def _generate_class_batch(self, offset, batch_size, inputs, targets, labels):
+        """Expects the data as list of lists of indices
+
+        Converts them to matrices of indices, lang model labels, and lengths"""
+        start = offset*batch_size
+        end = start + batch_size
+        if end > len(inputs):
+            end = len(inputs)
+#             print("Not full batch")
+        inputs = inputs[start:end]
+        targets = np.array(targets[start:end]).astype(np.int32)
+        labels = np.array(labels[start:end]).reshape([-1, 1]).astype(np.int64)
+        inputs, lens = self._sequences_to_tensor(inputs)
+        inputs = inputs.astype(np.int32)
+        lens = lens.astype(np.int32)
+        return inputs, targets, labels, lens
     
-    def batches(self, batch_size, neg_per=5, offset=0):
+    def batches(self, batch_size, neg_per=5, neg_level=1, offset=0):
         num_steps = len(self._paths) // batch_size
         if num_steps == 0:
             num_steps = 1
         for step in range(offset, num_steps):
-            yield self._generate_batch(step, batch_size, self._paths, self._targets, neg_per=neg_per)
+            yield self._generate_batch(step, batch_size, 
+                                       self._paths, self._targets, 
+                                       neg_per=neg_per, neg_level=neg_level)
 
     def validation_batch(self):
         valid_inputs, valid_targets, valid_labels, valid_lens = self._generate_batch(0,    
@@ -154,6 +186,13 @@ class DataHandler(object):
                                                               self._valid_targets, 
                                                               neg_per=0)
         return valid_inputs, valid_targets, valid_labels, valid_lens
+
+    def classification_batch(self, batch_size, inputs, targets, labels, offset=0, shuffle=False):
+        if shuffle:
+            data = zip(inputs, targets, labels)
+            random.shuffle(data)
+            inputs, targets, labels = zip(*data)
+        return self._generate_class_batch(offset, batch_size, inputs, targets, labels)
     
     def scale_vocab_dist(self, power):
         self._vocab_dist = self._distribution_to_power(self._true_vocab_dist, power)
@@ -174,7 +213,8 @@ class DataHandler(object):
         if vocab in vocab2int:
             return vocab2int[vocab]
         else:
-            return vocab2int.values()[-1] # <OOV>
+            # print(vocab, vocab2int.keys()[-1], vocab2int['<OOV>'])
+            return vocab2int['<OOV>'] # <OOV>
 
     def sequence_to_sentence(self, sequence, len_=10e5, show_dep=False, delim=" "):
         # does the sequence contain the dependencies also?
@@ -276,6 +316,9 @@ class DataHandler(object):
     def num_steps(self, batch_size):
         return len(self._paths) // batch_size
 
+    def index_at_vocab(self, vocab):
+        return self._vocab_to_int(vocab, self._vocab2int)
+
     def vocab_at(self, index):
         return self._int_to_vocab(index, self._int2vocab)
 
@@ -297,6 +340,10 @@ class DataHandler(object):
     @property
     def max_seq_len(self):
         return self._max_seq_len
+
+    @max_seq_len.setter
+    def max_seq_len(self, value):
+        self._max_seq_len = max(self._max_seq_len, value)
 
     @property
     def vocab_size(self):
