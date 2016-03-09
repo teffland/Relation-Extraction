@@ -168,14 +168,39 @@ def line_to_data(raw_line, verbose=False):
         print(sent, sdp)
         return None, None, None
 
+def create_label2int():
+    labels = [
+            'Cause-Effect(e1,e2)',
+            'Cause-Effect(e2,e1)',
+            'Product-Producer(e1,e2)',
+            'Product-Producer(e2,e1)',
+            'Entity-Origin(e1,e2)',
+            'Entity-Origin(e2,e1)',
+            'Instrument-Agency(e1,e2)',
+            'Instrument-Agency(e2,e1)',
+            'Component-Whole(e1,e2)',
+            'Component-Whole(e2,e1)',
+            'Content-Container(e1,e2)',
+            'Content-Container(e2,e1)',
+            'Entity-Destination(e1,e2)',
+            'Entity-Destination(e2,e1)',
+            'Member-Collection(e1,e2)', 
+            'Member-Collection(e2,e1)', 
+            'Message-Topic(e1,e2)',
+            'Message-Topic(e2,e1)',
+            'Other' ]
+    return {label:i for (i, label) in enumerate(labels)}
+
 def line_to_label(raw_label_line, label2int):
     """Convert raw line of semeval labels into a useable form (ints)"""
+    # define the list ourselves so the ordering is nice
     line = raw_label_line.strip()
-    if line in label2int:
-        return label2int[line]
-    else:
-        label2int[line] = len(label2int.keys())
-        return label2int[line]
+    # if line in label2int:
+    #     return label2int[line]
+    # else:
+    #     label2int[line] = len(label2int.keys())
+    #     return label2int[line]
+    return label2int[line]
 
 def load_semeval_data():
     """Load in SemEval 2010 Task 8 Training file and return lists of tuples:
@@ -187,7 +212,7 @@ def load_semeval_data():
     train = {'raws':[], 'sents':[], 'sdps':[], 'targets':[], 'labels':[], 'comments':[]}
     valid = {'raws':[], 'sents':[], 'sdps':[], 'targets':[], 'labels':[], 'comments':[]}
     text = open(training_txt_file, 'r').readlines()
-    label2int = dict() # keep running dictionary of labels
+    label2int = create_label2int() # keep running dictionary of labels
     assert len(text) // 4 == 8000
     for cursor in range(len(text) // 4): # each 4 lines is a datum
             text_line = text[4*cursor]
