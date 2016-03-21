@@ -1,6 +1,7 @@
 """
 Semeval Data handler
 """
+import random
 from spacy.en import English
 nlp = English()
 
@@ -202,13 +203,15 @@ def line_to_label(raw_label_line, label2int):
     #     return label2int[line]
     return label2int[line]
 
-def load_semeval_data():
+def load_semeval_data(shuffle_seed=42):
     """Load in SemEval 2010 Task 8 Training file and return lists of tuples:
     
     Tuple form =  (spacy(stripped sentence), index of e1, index of e2)"""
     ### TRAINING AND VALIDATION DATA ###
     training_txt_file = 'SemEval2010_task8_all_data/SemEval2010_task8_training/TRAIN_FILE.TXT'
-    validation_index = 8000 - 891# len data - len valid - 1 since we start at 0
+    validation_index = 8000 - 800 # len data - len valid - 1 since we start at 0
+    validation_size = 800
+    all_ = {'raws':[], 'sents':[], 'sdps':[], 'targets':[], 'labels':[], 'comments':[]}
     train = {'raws':[], 'sents':[], 'sdps':[], 'targets':[], 'labels':[], 'comments':[]}
     valid = {'raws':[], 'sents':[], 'sdps':[], 'targets':[], 'labels':[], 'comments':[]}
     text = open(training_txt_file, 'r').readlines()
@@ -225,6 +228,12 @@ def load_semeval_data():
                 print("Skipping this one... %r" % text_line)
                 print(sent, sdp, target, label)
                 continue
+            all_['raws'].append(text_line)
+            all_['sents'].append(sent)
+            all_['sdps'].append(sdp)
+            all_['targets'].append(target)
+            all_['labels'].append(label)
+            all_['comments'].append(comment)
             if cursor < validation_index:
                 train['raws'].append(text_line)
                 train['sents'].append(sent)
@@ -238,7 +247,20 @@ def load_semeval_data():
                 valid['sdps'].append(sdp)
                 valid['targets'].append(target)
                 valid['labels'].append(label)
-                valid['comments'].append(comment)
+            #     valid['comments'].append(comment)
+    # shuffle all and take the last validation_size as validation, rest as test
+    if shuffle_seed:
+        random.seed(shuffle_seed)
+        zip_all = zip(all_['raws'], all_['sents'], all_['sdps'], all_['targets'], all_['labels'], all_['comments'])
+        random.shuffle(zip_all)
+        raws, sents, sdps, targets, labels, comments = zip(*zip_all)
+        train['raws'], valid['raws'] = raws[:-validation_size], raws[-validation_size:]
+        train['sents'], valid['sents'] = sents[:-validation_size], sents[-validation_size:]
+        train['sdps'], valid['sdps'] = sdps[:-validation_size], sdps[-validation_size:]
+        train['targets'], valid['targets'] = targets[:-validation_size], targets[-validation_size:]
+        train['labels'], valid['labels'] = labels[:-validation_size], labels[-validation_size:]
+        train['comments'], valid['comments'] = comments[:-validation_size], comments[-validation_size:]
+
     int2label = {i:label for (label, i) in label2int.items()}
     print("Num training: %i" % len(train['labels']))
     print("Num valididation: %i" % len(valid['labels']))

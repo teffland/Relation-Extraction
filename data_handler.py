@@ -8,10 +8,10 @@ import random
 
 class DataHandler(object):
     """Handler to read in data and generate data and batches for model training and evaluation"""
-    def __init__(self, data_prefix, valid_percent=10, max_sequence_len=None):
+    def __init__(self, data_prefix, valid_percent=10, max_sequence_len=None, shuffle_seed=42):
         self._data_prefix = data_prefix
         self._valid_percent = valid_percent / 100.0
-        self.read_data()
+        self.read_data(shuffle_seed=shuffle_seed)
         if max_sequence_len:
             assert max_sequence_len >= self._max_seq_len, "Cannot for sequence length shorter than the data yields"
             self._max_seq_len = max_sequence_len
@@ -22,14 +22,16 @@ class DataHandler(object):
                 100-self._valid_percent*100, self._valid_percent*100))
         print("Vocab size: %i Dep size: %i" % (self._vocab_size, self._dep_size))
 
-    def read_data(self):
+    def read_data(self, shuffle_seed=42):
         print("Creating Data objects...")
         # read in sdp data
         data = []
         with open(self._data_prefix, 'r') as f:
             for line in f:
                 data.append(json.loads(line))
-        random.shuffle(data) # start off in random order before we do validation split 
+        if shuffle_seed:
+            random.seed(shuffle_seed)
+            random.shuffle(data) # start off in random order before we do validation split 
         self._paths = [ datum['path'] for datum in data ]
         self._max_seq_len = max([ len(path) for path in self._paths ])
         self._targets = [ datum['target'] for datum in data] # targets get doubly wrapped in lists
