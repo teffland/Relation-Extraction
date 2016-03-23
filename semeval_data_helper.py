@@ -76,7 +76,7 @@ def find_common_ancestor(e1_path, e2_path, verbose=False):
                 return t1
     return None
 
-def convert_nominals_to_sdp(X, Y, verbose=False):
+def convert_nominals_to_sdp(X, Y, include_ends=False, verbose=False):
     X_path = dependency_path_to_root(X)
     Y_path = dependency_path_to_root(Y)
     if verbose:
@@ -120,8 +120,32 @@ def convert_nominals_to_sdp(X, Y, verbose=False):
             ysdp.append((smart_token_to_text(token), token.dep_))
         sdp.extend(list(reversed(ysdp))) # looks like (X <- ... <- Z -> ... ) -> Y)
     # convert endpoints of the paths to placeholder X and Y tokens
-    sdp[0] = (u'<X>', sdp[0][1])
-    sdp[-1] = (u'<Y>', sdp[-1][1])
+    if not include_ends:
+        sdp[0] = (u'<X>', sdp[0][1])
+        sdp[-1] = (u'<Y>', sdp[-1][1])
+#     if len(sdp) < min_len or len(sdp) > max_len:
+#         continue                    # skip ones that are too short or long
+    return {'path': sdp, 'target':(X.text.lower(), Y.text.lower())}
+
+def convert_nominals_to_sentence(X, Y, sent, include_ends=False, verbose=False):
+    sdp = []
+    started = False
+    # loop through sentence, start recording when we see x, then stop after we see Y
+    for i, token in enumerate(sent):
+        if token is X:
+            started = True
+            sdp.append((smart_token_to_text(token), token.dep_))
+        elif token is Y:
+            sdp.append((smart_token_to_text(token), token.dep_))
+            started = False
+            break
+        if started:
+            sdp.append((smart_token_to_text(token), token.dep_))
+
+    # convert endpoints of the paths to placeholder X and Y tokens
+    if not include_ends:
+        sdp[0] = (u'<X>', sdp[0][1])
+        sdp[-1] = (u'<Y>', sdp[-1][1])
 #     if len(sdp) < min_len or len(sdp) > max_len:
 #         continue                    # skip ones that are too short or long
     return {'path': sdp, 'target':(X.text.lower(), Y.text.lower())}
@@ -153,11 +177,14 @@ def is_ok_sdp(sdp):#, int2vocab, oov_percent=75):
         return False
     return True
 
-def line_to_data(raw_line, verbose=False):
+def line_to_data(raw_line, include_ends=False, verbose=False, sentence=False):
     sent = convert_raw_x(raw_line)
     e1 = sent[1]
     e2 = sent[2]
-    sdp = convert_nominals_to_sdp(e1, e2, verbose=verbose)
+    if sentence:
+        sdp = convert_nominals_to_sentence(e1, e2, sent[0], include_ends=include_ends, verbose=verbose)
+    else:
+        sdp = convert_nominals_to_sdp(e1, e2, include_ends=include_ends, verbose=verbose)
     if not sdp:
         print(raw_line)
         print(sent)
@@ -203,7 +230,7 @@ def line_to_label(raw_label_line, label2int):
     #     return label2int[line]
     return label2int[line]
 
-def load_semeval_data(shuffle_seed=42):
+def load_semeval_data(shuffle_seed=42, include_ends=False, sentence=False):
     """Load in SemEval 2010 Task 8 Training file and return lists of tuples:
     
     Tuple form =  (spacy(stripped sentence), index of e1, index of e2)"""
@@ -221,7 +248,7 @@ def load_semeval_data(shuffle_seed=42):
             text_line = text[4*cursor]
             label_line = text[4*cursor +1]
             comment = text[4*cursor + 2]
-            sent, sdp, target = line_to_data(text_line)
+            sent, sdp, target = line_to_data(text_line, include_ends=include_ends, sentence=sentence)
             label = line_to_label(label_line, label2int)
 #             print(sent, sdp, target, label)
             if not (sent and sdp and target):
@@ -271,7 +298,7 @@ def load_semeval_data(shuffle_seed=42):
     test = {'raws':[], 'sents':[], 'sdps':[], 'targets':[]}
     text = open(test_txt_file, 'r').readlines()
     for line in text:
-        sent, sdp, target = line_to_data(line)
+        sent, sdp, target = line_to_data(line, include_ends=include_ends, sentence=sentence)
         if not (sent and sdp and target):
             print("Skipping this one... %r" % text_line)
             print(sent, sdp, target, label)

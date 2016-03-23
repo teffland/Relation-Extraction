@@ -44,7 +44,9 @@ class RelEmbed(object):
         self.max_num_steps = config['max_num_steps']
         self.word_embed_size = config['word_embed_size']
         self.dep_embed_size = config['dep_embed_size']
+        self.hidden_layer_size = config['hidden_layer_size']
         self.input_size = self.word_embed_size + self.dep_embed_size
+        self.bidirectional = config['bidirectional']
         self.hidden_size = 2 * self.word_embed_size #config['hidden_size']
         self.pretrained_word_embeddings = config['pretrained_word_embeddings'] # None if we don't provide them
         if np.any(self.pretrained_word_embeddings):
@@ -59,6 +61,9 @@ class RelEmbed(object):
         self.summary_prefix = config['summary_prefix'] + self.name
         
         self.initializer = tf.random_uniform_initializer(-1., 1.)
+        self.word_initializer = tf.truncated_normal_initializer(mean=0.0, stddev=1./(self.word_embed_size))
+        self.dep_initializer = tf.truncated_normal_initializer(mean=0.0, stddev=1./(self.dep_embed_size))
+        self.hidden_initializer = tf.truncated_normal_initializer(mean=0.0, stddev=1./(self.hidden_size))
         with tf.name_scope(self.name):
             with tf.name_scope("Forward"):
                 self._build_forward_graph()
@@ -72,7 +77,7 @@ class RelEmbed(object):
         self._valid_accuracy = tf.Variable(0.0, trainable=False)
         self._valid_acc_summary = tf.merge_summary([tf.scalar_summary("Valid_accuracy", self._valid_accuracy)])
 
-        self.saver = tf.train.Saver(tf.all_variables())
+        self.saver = tf.train.Saver(tf.all_variables(), max_to_keep=0)
             
         self.session = tf.InteractiveSession()
         self.session.run(tf.initialize_all_variables())        
@@ -102,17 +107,21 @@ class RelEmbed(object):
                 self._right_target_embeddings = tf.Variable(self.pretrained_word_embeddings, name="right_target_embeddings")
             else:
                 self._word_embeddings = tf.get_variable("word_embeddings", 
-                                                        [self.vocab_size, self.word_embed_size],
+                                                        [self.vocab_size, self.word_embed_size], 
+                                                    initializer=self.word_initializer,
                                                         dtype=tf.float32)
                 self._left_target_embeddings = tf.get_variable("left_target_embeddings", 
-                                                        [self.vocab_size, self.word_embed_size],
+                                                        [self.vocab_size, self.word_embed_size], 
+                                                    initializer=self.word_initializer,
                                                         dtype=tf.float32)
                 self._right_target_embeddings = tf.get_variable("right_target_embeddings", 
-                                                        [self.vocab_size, self.word_embed_size],
+                                                        [self.vocab_size, self.word_embed_size], 
+                                                    initializer=self.word_initializer,
                                                         dtype=tf.float32)
             
             self._dependency_embeddings = tf.get_variable("dependency_embeddings", 
-                                                    [self.dep_vocab_size, self.dep_embed_size],
+                                                    [self.dep_vocab_size, self.dep_embed_size], 
+                                                    initializer=self.dep_initializer,
                                                     dtype=tf.float32)
             # TODO: Add POS embeddings
             
@@ -122,10 +131,18 @@ class RelEmbed(object):
             dep_embeds = tf.nn.dropout(tf.nn.embedding_lookup(self._dependency_embeddings,
                                                 tf.slice(self._input_phrases, [0,0,1], [-1, -1, 1])),
                                        keep_prob=self._keep_prob)
-            left_target_embeds = tf.nn.dropout(tf.nn.embedding_lookup(self._left_target_embeddings, 
+            ### SEPARATE TARGET EMBEDDING MATRIX ###
+            # left_target_embeds = tf.nn.dropout(tf.nn.embedding_lookup(self._left_target_embeddings, 
+            #                                             tf.slice(self._input_targets, [0,0], [-1, 1])),
+            #                                     keep_prob=self._keep_prob)
+            # right_target_embeds = tf.nn.dropout(tf.nn.embedding_lookup(self._right_target_embeddings, 
+            #                                             tf.slice(self._input_targets, [0,1], [-1, 1])),
+            #                                      keep_prob=self._keep_prob)
+            ### ALL SAME EMBEDDING MATRIX ###
+            left_target_embeds = tf.nn.dropout(tf.nn.embedding_lookup(self._word_embeddings, 
                                                         tf.slice(self._input_targets, [0,0], [-1, 1])),
                                                 keep_prob=self._keep_prob)
-            right_target_embeds = tf.nn.dropout(tf.nn.embedding_lookup(self._right_target_embeddings, 
+            right_target_embeds = tf.nn.dropout(tf.nn.embedding_lookup(self._word_embeddings, 
                                                         tf.slice(self._input_targets, [0,1], [-1, 1])),
                                                  keep_prob=self._keep_prob)
 #             print(tf.slice(self._input_phrases, [0,0,1], [-1, -1, 1]).get_shape(), dep_embeds.get_shape())
@@ -135,27 +152,42 @@ class RelEmbed(object):
             # TODO: Add dropout to embeddings
         
         with tf.name_scope("RNN"):
-            # start off with a basic configuration
-            self.cell = tf.nn.rnn_cell.GRUCell(self.hidden_size, 
-                                                input_size=self.input_size)
+            
             # TODO: Make it multilevel
 #             self._initial_state = self.cell.zero_state(batch_size, tf.float32)
 #             print(self._initial_state.get_shape())
             input_words = [ tf.squeeze(input_, [1, 2]) for input_ in tf.split(1, self.max_num_steps, input_embeds)]
             input_deps = [ tf.squeeze(input_, [1, 2]) for input_ in tf.split(1, self.max_num_steps, dep_embeds)]
             inputs = [ tf.concat(1, [input_word, input_dep]) 
-                      for (input_word, input_dep) in zip(input_words, input_deps)]
+                       for (input_word, input_dep) in zip(input_words, input_deps)]
 
-            _, state = tf.nn.rnn(self.cell, inputs, 
-                                 sequence_length=tf.squeeze(self._input_lengths, [1]),
-                                 dtype=tf.float32)
+            # inputs = input_words # just use words
+
+            # start off with a basic configuration
+            if self.bidirectional:
+                self.fwcell = tf.nn.rnn_cell.GRUCell(self.hidden_size/2, 
+                                                input_size=self.input_size)
+                self.bwcell = tf.nn.rnn_cell.GRUCell(self.hidden_size/2, 
+                                                input_size=self.input_size)
+                outs = tf.nn.bidirectional_rnn(self.fwcell, self.bwcell, inputs, 
+                                        sequence_length=tf.to_int64(tf.squeeze(self._input_lengths, [1])),
+                                        dtype=tf.float32)
+                # splice out the final forward and backward hidden states since apparently the documentation lies
+                fw_state = tf.split(1, 2, outs[-1])[0]
+                bw_state = tf.split(1, 2, outs[0])[1]
+                state = tf.concat(1, [fw_state, bw_state])
+            else:
+                self.cell = tf.nn.rnn_cell.GRUCell(self.hidden_size, 
+                                                input_size=self.input_size)
+                _, state = tf.nn.rnn(self.cell, inputs, 
+                                     sequence_length=tf.squeeze(self._input_lengths, [1]),
+                                     dtype=tf.float32)
 #                                  initial_state=self._initial_state)
             self._final_state = tf.nn.dropout(state, keep_prob= self._keep_prob)
             
         with tf.name_scope("Loss"):
             flat_states = tf.reshape(state, [-1])
             flat_target_embeds = tf.reshape(self._target_embeds, [-1])
-#             assert self.hidden_size == (self.word_embed_size), "Hidden state must equal concated inputs" 
             flat_logits = tf.mul(flat_states, flat_target_embeds)
             logits = tf.reduce_sum(tf.reshape(flat_logits, tf.pack([batch_size, -1])), 1)
             self._l2_penalty = self._lambda*(tf.nn.l2_loss(self._word_embeddings)
@@ -181,20 +213,89 @@ class RelEmbed(object):
         with tf.name_scope("Classifier"):
             self._class_lambda = tf.Variable(0.001, trainable=False, name="Class_L2_Lambda")
             self._softmax_input = tf.concat(1, [self._final_state, self._target_embeds], name="concat_input")
-            self._softmax_w = tf.get_variable("softmax_w", [self._softmax_input.get_shape()[1], self.num_classes])
-            self._softmax_b = tf.Variable(tf.zeros([self.num_classes], dtype=tf.float32), name="softmax_b")
 
-            class_logits = tf.matmul(self._softmax_input, self._softmax_w) + self._softmax_b
+            ### REGULAR SOFTMAX ###
+            self._softmax_input = self._final_state # only predict using endpoints
+
+            ### with a hidden layer
+            # self._hidden_w = tf.get_variable("hidden_w", [self._softmax_input.get_shape()[1], self.hidden_layer_size])
+            # self._hidden_b = tf.Variable(tf.zeros([self.hidden_layer_size], dtype=tf.float32), name="hidden_b")
+            # self._scoring_w = tf.get_variable("scoring_w", [self.hidden_layer_size, self.num_classes])
+            # self._scoring_b = tf.Variable(tf.zeros([self.num_classes], dtype=tf.float32), name="scoring_b")
+
+            # hidden_logits = tf.nn.dropout(tf.nn.tanh(tf.nn.xw_plus_b(self._softmax_input, 
+            #                                                          self._hidden_w, 
+            #                                                          self._hidden_b)), 
+            #                               keep_prob=self._keep_prob)
+            # class_logits = tf.nn.xw_plus_b(hidden_logits, self._scoring_w,  self._scoring_b)
+            # self._predictions = tf.argmax(class_logits, 1, name="predict")
+            # self._predict_probs = tf.nn.softmax(class_logits, name="predict_probabilities")
+
+            ### just softmax
+            self._scoring_w = tf.get_variable("scoring_w", [self._softmax_input.get_shape()[1], self.num_classes])
+            self._scoring_b = tf.Variable(tf.zeros([self.num_classes], dtype=tf.float32), name="scoring_b")
+
+            class_logits = tf.matmul(self._softmax_input, self._scoring_w) + self._scoring_b
             self._predictions = tf.argmax(class_logits, 1, name="predict")
             self._predict_probs = tf.nn.softmax(class_logits, name="predict_probabilities")
+
+
+            ### TENSOR SOFTMAX (crazy slow -- almost 1billion parameters)###
+            # self._scoring_w = tf.get_variable("score_w",  [self.hidden_size, self.hidden_size, self.num_classes],
+            #                                     initializer=self.hidden_initializer)
+            # self._scoring_b = tf.Variable(tf.zeros([self.num_classes], dtype=tf.float32), name="score_b")
+            
+            # # batch tensor inner product (note: target == hidden)
+            # hidden = tf.expand_dims(self._final_state, [1])   # [ batch, 1, hidden]
+            # hidden = tf.tile(hidden, [self.num_classes, 1, 1])                      # [ batch x num_class, 1, hidden]
+            # target = tf.expand_dims(self._target_embeds, [1]) # [ batch, 1, target]
+            # target = tf.tile(target, [self.num_classes, 1, 1])                 # [ batch, x num_class, 1, target]
+            # W = tf.reshape(self._scoring_w, [-1, self.hidden_size, self.hidden_size]) # [num_class, hidden, hidden]
+            # W = tf.tile(W, tf.pack([tf.shape(self._target_embeds)[0], 1, 1]))                         # [ batch x num_class, hidden, hidden ]
+            # left = tf.batch_matmul(hidden, W)                 # [bact x num_class, 1, hidden]
+            # right = tf.squeeze(tf.batch_matmul(left, target, adj_y=True), [1,2]) # [batch x num_class]
+                        
+            # class_logits = (tf.reshape(right, tf.pack([tf.shape(self._target_embeds)[0], self.num_classes]))
+            #                + self._scoring_b) # [batch, num_class]
+            # self._predictions = tf.argmax(class_logits, 1, name="predict")
+
+            ### DIAG TENSOR SOFTMAX ###
+            # self._scoring_w = tf.get_variable("score_w",  [self.hidden_size, self.num_classes],
+            #                                     initializer=self.hidden_initializer)
+            # self._scoring_b = tf.Variable(tf.zeros([self.num_classes], dtype=tf.float32), name="score_b")
+            
+            # # batch tensor inner product (note: target == hidden)
+            # hidden = tf.expand_dims(self._final_state, [1])   # [ batch, 1, hidden]
+            # hidden = tf.tile(hidden, [self.num_classes, 1, 1])                      # [ batch x num_class, 1, hidden]
+            # target = tf.expand_dims(self._target_embeds, [1]) # [ batch, 1, target]
+            # target = tf.tile(target, [self.num_classes, 1, 1])                 # [ batch, x num_class, 1, target]
+            # W = tf.reshape(self._scoring_w, [-1, self.hidden_size]) # [num_class, hidden]
+            # W = tf.squeeze(tf.concat(0, [tf.diag(w) for w in tf.split(0, self.num_classes, W)])) # [num_class, hidden, hidden]
+            # W = tf.tile(W, tf.pack([tf.shape(self._target_embeds)[0], 1, 1]))                         # [ batch x num_class, hidden, hidden ]
+            # left = tf.batch_matmul(hidden, W)                 # [bact x num_class, 1, hidden]
+            # right = tf.squeeze(tf.batch_matmul(left, target, adj_y=True), [1,2]) # [batch x num_class]
+                        
+            # class_logits = (tf.reshape(right, tf.pack([tf.shape(self._target_embeds)[0], self.num_classes]))
+            #                + self._scoring_b) # [batch, num_class]
+            # self._predictions = tf.argmax(class_logits, 1, name="predict")
+            # self._predict_probs = tf.nn.softmax(class_logits, name="predict_probabilities")
+            # pred_scores = tf.reduce_max(scores, 1)
         
         with tf.name_scope("Loss"):
             self._class_labels = tf.placeholder(tf.int64, [None, 1])
             self._class_xent = tf.nn.sparse_softmax_cross_entropy_with_logits(class_logits, 
                                                                               tf.squeeze(self._class_labels, [1]))
             self._avg_class_loss = tf.reduce_mean(self._class_xent)
-            self._class_l2 = self._class_lambda*(tf.nn.l2_loss(self._softmax_w)
-                                                + tf.nn.l2_loss(self._softmax_b))
+            # self._class_l2 = self._class_lambda*(tf.nn.l2_loss(self._softmax_w)
+            #                                     + tf.nn.l2_loss(self._softmax_b))
+
+            # self._class_l2 = self._class_lambda*(tf.nn.l2_loss(self._scoring_w)
+            #                                     + tf.nn.l2_loss(self._scoring_b)
+            #                                     + tf.nn.l2_loss(self._hidden_w)
+            #                                     + tf.nn.l2_loss(self._hidden_b))
+
+            self._class_l2 = self._class_lambda*(tf.nn.l2_loss(self._scoring_w)
+                                                + tf.nn.l2_loss(self._scoring_b))
 
             self._class_loss = self._avg_class_loss + self._class_l2
 
@@ -209,7 +310,7 @@ class RelEmbed(object):
         with tf.name_scope("Unsupervised_Trainer"):
             self._global_step = tf.Variable(0, name="global_step", trainable=False)
 #             self._lr = tf.Variable(1.0, trainable=False)
-            self._optimizer = tf.train.AdagradOptimizer(1.0)
+            self._optimizer = tf.train.AdamOptimizer(.001)
             
             # clip and apply gradients
             grads_and_vars = self._optimizer.compute_gradients(self._loss)
@@ -233,7 +334,7 @@ class RelEmbed(object):
         with tf.name_scope("Classification_Trainer"):
             self._class_global_step = tf.Variable(0, name="class_global_step", trainable=False)
 #             self._lr = tf.Variable(1.0, trainable=False)
-            self._class_optimizer = tf.train.AdagradOptimizer(1.0)
+            self._class_optimizer = tf.train.AdamOptimizer(.001)
             
             # clip and apply gradients
             grads_and_vars = self._class_optimizer.compute_gradients(self._class_loss)
@@ -286,15 +387,40 @@ class RelEmbed(object):
             query_dep = [tf.squeeze(qd, [1]) for qd in tf.split(0, self.max_num_steps, query_dep_embed)]
 #             print(query_phrase[0].get_shape(), query_dep[0].get_shape())
             query_input = [ tf.concat(1, [qw, qd]) for (qw, qd) in zip(query_phrase, query_dep)]
-            _, query_phrase_state = tf.nn.rnn(self.cell, query_input, 
-                                              sequence_length=self._query_length, 
+
+            # just words
+            # query_input = query_phrase
+            if self.bidirectional:
+                outs = tf.nn.bidirectional_rnn(self.fwcell, self.bwcell, query_input, 
+                                        sequence_length=tf.to_int64(self._query_length),
+                                        dtype=tf.float32)
+                # splice out the final forward and backward hidden states since apparently the documentation lies
+                fw_state = tf.split(1, 2, outs[-1])[0]
+                bw_state = tf.split(1, 2, outs[0])[1]
+                query_phrase_state = tf.concat(1, [fw_state, bw_state])
+            else:
+                _, query_phrase_state = tf.nn.rnn(self.cell, query_input, 
+                                              sequence_length=tf.to_int64(self._query_length), 
                                               dtype=tf.float32)
+
             # compute reps of similarity phrases
             sim_phrases = [tf.squeeze(qw, [1,2]) for qw in tf.split(1, self.max_num_steps, sim_phrase_embed)]
             sim_deps = [tf.squeeze(qd, [1,2]) for qd in tf.split(1, self.max_num_steps, sim_dep_embed)]
             sim_input = [ tf.concat(1, [qw, qd]) for (qw, qd) in zip(sim_phrases, sim_deps)]
-            _, sim_phrase_states = tf.nn.rnn(self.cell, sim_input, 
-                                             sequence_length=tf.squeeze(self._sim_lengths, [1]), 
+
+            #jsut words
+            # sim_input = sim_phrases
+            if self.bidirectional:
+                outs = tf.nn.bidirectional_rnn(self.fwcell, self.bwcell, sim_input, 
+                                        sequence_length=tf.to_int64(tf.squeeze(self._sim_lengths, [1])),
+                                        dtype=tf.float32)
+                # splice out the final forward and backward hidden states since apparently the documentation lies
+                fw_state = tf.split(1, 2, outs[-1])[0]
+                bw_state = tf.split(1, 2, outs[0])[1]
+                sim_phrase_states = tf.concat(1, [fw_state, bw_state])
+            else:
+                _, sim_phrase_states = tf.nn.rnn(self.cell, sim_input, 
+                                             sequence_length=tf.to_int64(tf.squeeze(self._sim_lengths, [1])), 
                                              dtype=tf.float32)
             
         with tf.name_scope("Similarities"):
@@ -428,7 +554,6 @@ class RelEmbed(object):
                                                             self._keep_prob:1.0})
             distributions = distributions.reshape([path_lens.shape[0], -1])
             #predictions are 2d array w/ one col
-            print("pred shape:", predictions.shape)
             return list(predictions), list(distributions) 
         
         else:
@@ -437,7 +562,6 @@ class RelEmbed(object):
                                             self._input_targets:targets,
                                             self._input_lengths:path_lens,
                                             self._keep_prob:1.0})
-            print("pred shape:", predictions.shape)
             return list(predictions)
             
     def checkpoint(self):

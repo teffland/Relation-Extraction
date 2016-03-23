@@ -99,10 +99,11 @@ class DataHandler(object):
                     tensor[i, :len(list_), j] = [ x[j] for x in list_ ]
             return tensor, lengths
     
-    def _generate_batch(self, offset, batch_size, inputs, targets, neg_per=None, neg_level=1):
+    def _generate_batch(self, offset, batch_size, inputs, targets, target_neg=False, neg_per=None, neg_level=1):
         """Expects the data as list of lists of indices
 
         Converts them to matrices of indices, lang model labels, and lengths"""
+        assert neg_level > 0, "Cannot have negative examples with no corruption"
         start = offset*batch_size
         end = start + batch_size
         if end > len(inputs):
@@ -117,31 +118,45 @@ class DataHandler(object):
         # TODO: option to replace more than one phrase element
         # and replace that with a random word drawn from the scaled unigram distribution
         if neg_per:
+            # neg level can't be higher than 2 if neg_target:
+            if target_neg:
+                neg_level = min(2, neg_level)
             negatives = []
             neg_targets = []
-            for i, seq in enumerate(inputs):
-                for neg in range(neg_per):
+            for i, seq in enumerate(inputs): # for each true sequence
+                for neg in range(neg_per): # create neg_per extra negative examples
                     neg_seq = seq[:]
-                    # break sticks to split up noise into vocab and deps
-                    # pick an int that's less that seq - <X> - <Y>
-                    # but make sure that's not more than we asked for
-                    num_v = min(int(random.uniform(0, max(len(seq)-2, 1))), neg_level)
-                    num_d = neg_level - num_v
-                    if num_v: # choice breaks if zero
-                        v_rand_idx = np.random.choice(range(1, len(seq)-1), size=num_v)
-                        v_noise = np.random.choice(range(len(self._vocab)), 
-                                                   size=num_v, p=self._vocab_dist)
-                        for j, v in zip(v_rand_idx, v_noise):
-                            neg_seq[j][0] = v
-                    d_rand_idx = np.random.choice(range(0, len(seq)), size=num_d)
-                    d_noise = np.random.choice(range(len(self._dep_vocab)), 
-                                               size=num_d, p=self._dep_dist)
-                    # do the replacements
-                    
-                    for j, d in zip(d_rand_idx, d_noise):
-                        neg_seq[j][1] = d
+                    neg_target = targets[i]
+                    if target_neg:
+                        # just one, pick a random target to flip
+                        if neg_level == 1:
+                            neg_idx = int(random.uniform(0,2)) # random 0,1 w/ 50% each
+                            neg_target[neg_idx] = np.random.choice(range(len(self._vocab)), 
+                                                   size=1, p=self._vocab_dist)[0]
+                        if neg_level == 2:
+                            neg_target = list(np.random.choice(range(len(self._vocab)), 
+                                                   size=2, p=self._vocab_dist))
+                    else: # otherwise we're corrupting the sequences, not the targets
+                        # break sticks to split up noise into vocab and deps
+                        # pick an int that's less that seq - <X> - <Y>
+                        # but make sure that's not more than we asked for
+                        num_v = min(int(random.uniform(0, max(len(seq)-2, 1))), neg_level)
+                        num_d = neg_level - num_v
+                        if num_v: # choice breaks if zero
+                            v_rand_idx = np.random.choice(range(1, len(seq)-1), size=num_v)
+                            v_noise = np.random.choice(range(len(self._vocab)), 
+                                                       size=num_v, p=self._vocab_dist)
+                            for j, v in zip(v_rand_idx, v_noise):
+                                neg_seq[j][0] = v
+                        d_rand_idx = np.random.choice(range(0, len(seq)), size=num_d)
+                        d_noise = np.random.choice(range(len(self._dep_vocab)), 
+                                                   size=num_d, p=self._dep_dist)
+                        # do the replacements
+                        
+                        for j, d in zip(d_rand_idx, d_noise):
+                            neg_seq[j][1] = d
                     negatives.append(neg_seq)
-                    neg_targets.append(targets[i])
+                    neg_targets.append(neg_target)
             neg_mat, neg_len = self._sequences_to_tensor(negatives)
             neg_labels = np.zeros_like(neg_len)
             all_inputs = np.vstack((input_mat, neg_mat)).astype(np.int32)
@@ -172,13 +187,14 @@ class DataHandler(object):
         lens = lens.astype(np.int32)
         return inputs, targets, labels, lens
     
-    def batches(self, batch_size, neg_per=5, neg_level=1, offset=0):
+    def batches(self, batch_size, target_neg=False, neg_per=5, neg_level=1, offset=0):
         num_steps = len(self._paths) // batch_size
         if num_steps == 0:
             num_steps = 1
         for step in range(offset, num_steps):
             yield self._generate_batch(step, batch_size, 
                                        self._paths, self._targets, 
+                                       target_neg=target_neg,
                                        neg_per=neg_per, neg_level=neg_level)
 
     def validation_batch(self):

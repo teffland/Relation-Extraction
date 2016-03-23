@@ -282,7 +282,9 @@ def sec_to_hms(seconds):
 @click.option('-o', '--outfile', default='data/semeval_train_sdp_', help='Outfile prefix')
 @click.option('--minlen', default=1, help="Minimum length of the dependency path not including nominals")
 @click.option('--maxlen', default=7, help="Maximum length of the dependency path not including nominals")
-def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen):
+@click.option('--include_ends', default=False, is_flag=True, help="Include the endpoints of the sdps, not <X>,<Y>")
+@click.option('--sentence', default=False, is_flag=True, help="Compute sequences between nominals instead of SDPs")
+def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen, include_ends, sentence):
     FLAGS = {
         'num_sentences': min(num_sentences, 8000), # max is 31661479
         'min_count':min_count,        
@@ -298,7 +300,9 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen)
 
     print("(%i:%i:%i) Reading Data..." % sec_to_hms(time()-start))
 
-    train, valid, test, label2int, int2label = sdh.load_semeval_data()
+    train, valid, test, label2int, int2label = sdh.load_semeval_data(shuffle_seed=0, 
+                                                                     include_ends=include_ends,
+                                                                     sentence=sentence) # dont' permute data
     sentences = [ sent[0] for sent in train['sents']+valid['sents']+test['sents'] ]
 
     print("(%i:%i:%i) Creating vocab..." % sec_to_hms(time()-start))
