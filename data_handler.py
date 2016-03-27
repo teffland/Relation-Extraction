@@ -141,6 +141,7 @@ class DataHandler(object):
                         # pick an int that's less that seq - <X> - <Y>
                         # but make sure that's not more than we asked for
                         num_v = min(int(random.uniform(0, max(len(seq)-2, 1))), neg_level)
+                        # print(num_v, len(seq))
                         num_d = neg_level - num_v
                         if num_v: # choice breaks if zero
                             v_rand_idx = np.random.choice(range(1, len(seq)-1), size=num_v)
@@ -148,13 +149,13 @@ class DataHandler(object):
                                                        size=num_v, p=self._vocab_dist)
                             for j, v in zip(v_rand_idx, v_noise):
                                 neg_seq[j][0] = v
-                        d_rand_idx = np.random.choice(range(0, len(seq)), size=num_d)
-                        d_noise = np.random.choice(range(len(self._dep_vocab)), 
-                                                   size=num_d, p=self._dep_dist)
-                        # do the replacements
-                        
-                        for j, d in zip(d_rand_idx, d_noise):
-                            neg_seq[j][1] = d
+                        if num_d:
+                            d_rand_idx = np.random.choice(range(0, len(seq)), size=num_d)
+                            d_noise = np.random.choice(range(len(self._dep_vocab)), 
+                                                       size=num_d, p=self._dep_dist)
+                            # do the replacements
+                            for j, d in zip(d_rand_idx, d_noise):
+                                neg_seq[j][1] = d
                     negatives.append(neg_seq)
                     neg_targets.append(neg_target)
             neg_mat, neg_len = self._sequences_to_tensor(negatives)
