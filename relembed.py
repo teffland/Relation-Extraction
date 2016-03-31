@@ -5,6 +5,43 @@ from __future__ import print_function
 import numpy as np
 import tensorflow as tf
 
+# class Config(object):
+#     """ A configuration object for the RelEmbed model
+
+#     Allows for extensible checking that model configurations are compatible,
+#     and easier syntax for initialization of RelEmbed
+#     """
+#     def __init__(max_num_steps,
+#                  word_embed_size=200,
+#                  dep_embed_size=25,
+#                  pos_embed_size=25,
+#                  pretrained_word_embeddings=None,
+#                  pretrained_dep_embeddings=None,
+#                  pretrained_pos_embeddings=None,
+#                  hidden_layer_size=None,
+#                  is_bidirectional=False,
+#                  num_rnn_layers=1,
+#                  rnn_type='GRU',
+                 
+
+#                  ):
+def batch_triple_inner(W, x, y, z):
+    """ Computes the inner product of 3 vectors and a tensor
+
+    Args:
+        W: a 3D tensor with shape[x_len, y_len, z_len]
+        x: a 2D tensor with shape[batch_size, x_len]
+        y: a 2D tensor with shape[batch_size, y_len]
+        y: a 2D tensor with shape[batch_size, z_len]
+
+    NOTE: Literally as naive as is possible"""
+    val = tf.zeros(tf.pack([tf.shape(x)[0], 1])) # get zeros to work with unknown size
+    for i in xrange(x.get_shape()[1]):
+        for j in xrange(y.get_shape()[1]):
+            for k in xrange(z.get_shape()[1]):
+                val += W[i,j,k]*x[:,i]*y[:,j]*z[:,k]
+    return val
+
 class RelEmbed(object):
     """ Encapsulation of the dependency RNN lang model
     
@@ -40,7 +77,6 @@ class RelEmbed(object):
 
     """
     def __init__(self, config):
-#         self.batch_size = config['batch_size']
         self.max_num_steps = config['max_num_steps']
         self.word_embed_size = config['word_embed_size']
         self.dep_embed_size = config['dep_embed_size']
@@ -73,9 +109,6 @@ class RelEmbed(object):
                 self._build_class_train_graph()
             with tf.name_scope("Nearby"):
                 self._build_similarity_graph()
-        
-        self._valid_accuracy = tf.Variable(0.0, trainable=False)
-        self._valid_acc_summary = tf.merge_summary([tf.scalar_summary("Valid_accuracy", self._valid_accuracy)])
 
         self.saver = tf.train.Saver(tf.all_variables(), max_to_keep=0)
             
@@ -239,70 +272,119 @@ class RelEmbed(object):
             # self._predict_probs = tf.nn.softmax(class_logits, name="predict_probabilities")
 
             ### just softmax
-            self._scoring_w = tf.get_variable("scoring_w", [self._softmax_input.get_shape()[1], self.num_classes])
-            self._scoring_b = tf.Variable(tf.zeros([self.num_classes], dtype=tf.float32), name="scoring_b")
+            self.score_w = tf.get_variable("score_w", [self._softmax_input.get_shape()[1], self.num_classes])
+            self.score_bias = tf.Variable(tf.zeros([self.num_classes], dtype=tf.float32), name="score_bias")
 
-            class_logits = tf.matmul(self._softmax_input, self._scoring_w) + self._scoring_b
-            self._predictions = tf.argmax(class_logits, 1, name="predict")
-            self._predict_probs = tf.nn.softmax(class_logits, name="predict_probabilities")
+            scores = tf.matmul(self._softmax_input, self.score_w) + self.score_bias
+            self._predictions = tf.argmax(scores, 1, name="predict")
+            self._predict_probs = tf.nn.softmax(scores, name="predict_probabilities")
 
+            ### WORKING DIAG TENSOR INNER PRODUCT 2.0 ###
+            # score(class c) = h^T * W_c * <w_x, w_y>
+            # self.ws = [ tf.get_variable("score_w_"+str(i), [self.hidden_size])
+            #             for i in range(self.num_classes) ]
+            # scores = tf.concat(1,
+            #                    [ tf.reduce_sum(tf.mul(self._final_state, tf.mul(w, self._target_embeds)), 
+            #                                    1, keep_dims=True)
+            #                      for w in self.ws ] )
+            # print(scores.get_shape())
+            # self._predictions = tf.argmax(scores, 1, name="predict")
+            # self._predict_probs = tf.nn.softmax(scores, name="predict_probabilities")
 
-            ### TENSOR SOFTMAX (crazy slow -- almost 1billion parameters)###
-            # self._scoring_w = tf.get_variable("score_w",  [self.hidden_size, self.hidden_size, self.num_classes],
-            #                                     initializer=self.hidden_initializer)
-            # self._scoring_b = tf.Variable(tf.zeros([self.num_classes], dtype=tf.float32), name="score_b")
-            
-            # # batch tensor inner product (note: target == hidden)
-            # hidden = tf.expand_dims(self._final_state, [1])   # [ batch, 1, hidden]
-            # hidden = tf.tile(hidden, [self.num_classes, 1, 1])                      # [ batch x num_class, 1, hidden]
-            # target = tf.expand_dims(self._target_embeds, [1]) # [ batch, 1, target]
-            # target = tf.tile(target, [self.num_classes, 1, 1])                 # [ batch, x num_class, 1, target]
-            # W = tf.reshape(self._scoring_w, [-1, self.hidden_size, self.hidden_size]) # [num_class, hidden, hidden]
-            # W = tf.tile(W, tf.pack([tf.shape(self._target_embeds)[0], 1, 1]))                         # [ batch x num_class, hidden, hidden ]
-            # left = tf.batch_matmul(hidden, W)                 # [bact x num_class, 1, hidden]
-            # right = tf.squeeze(tf.batch_matmul(left, target, adj_y=True), [1,2]) # [batch x num_class]
-                        
-            # class_logits = (tf.reshape(right, tf.pack([tf.shape(self._target_embeds)[0], self.num_classes]))
-            #                + self._scoring_b) # [batch, num_class]
-            # self._predictions = tf.argmax(class_logits, 1, name="predict")
+            ## WORKING FULL TENSOR BILINEAR PRODUCT W/ LINEAR COMPONENT AND BIAS ###
+            # self.ws = [ tf.get_variable("score_w_"+str(i), [self.hidden_size, self.hidden_size])
+            #             for i in range(self.num_classes) ]
+            # self.score_w = tf.get_variable("score_w", [self._softmax_input.get_shape()[1], self.num_classes])   
+            # self.score_bias = tf.Variable(tf.zeros([self.num_classes], dtype=tf.float32), name="score_b")
+            # scores = (tf.concat(1,
+            #                    [ tf.squeeze( tf.batch_matmul( # [ batch x 1 x 1] -> [ batch x 1 ]
+            #                                     tf.expand_dims(self._final_state, [1]), # [ batch x 1 x hidden ]
+            #                                     tf.expand_dims( # [ batch x hidden x 1 ]
+            #                                         tf.matmul(self._target_embeds, w), # [ batch x hidden ]
+            #                                                   [2])),
+            #                                     [2])
+            #                      for w in self.ws ])
+            #          + tf.matmul(self._softmax_input, self.score_w)
+            #          + self.score_bias)
+            # ## DO A TRANSFORM ON h ALSO ##
+            # self.hs = [ tf.get_variable("score_h_"+str(i), [self.hidden_size, self.hidden_size])
+            #             for i in range(self.num_classes) ]
+            # scores = tf.concat(1,
+            #                    [ tf.squeeze( tf.batch_matmul( # [ batch x 1 x 1] -> [ batch x 1 ]
+            #                                     tf.expand_dims( # [ batch x hidden x 1 ]
+            #                                         tf.matmul(self._final_state, h), # [ batch x hidden ]
+            #                                                   [1]),
+            #                                     tf.expand_dims( # [ batch x hidden x 1 ]
+            #                                         tf.matmul(self._target_embeds, w), # [ batch x hidden ]
+            #                                                   [2])),
+            #                                 [2])
+            #                      for h, w in zip(self.hs, self.ws) ])
+            # print(scores.get_shape())
+            # self._predictions = tf.argmax(scores, 1, name="predict")
+            # self._predict_probs = tf.nn.softmax(scores, name="predict_probabilities")
 
-            ### DIAG TENSOR SOFTMAX ###
-            # self._scoring_w = tf.get_variable("score_w",  [self.hidden_size, self.num_classes],
-            #                                     initializer=self.hidden_initializer)
-            # self._scoring_b = tf.Variable(tf.zeros([self.num_classes], dtype=tf.float32), name="score_b")
-            
-            # # batch tensor inner product (note: target == hidden)
-            # hidden = tf.expand_dims(self._final_state, [1])   # [ batch, 1, hidden]
-            # hidden = tf.tile(hidden, [self.num_classes, 1, 1])                      # [ batch x num_class, 1, hidden]
-            # target = tf.expand_dims(self._target_embeds, [1]) # [ batch, 1, target]
-            # target = tf.tile(target, [self.num_classes, 1, 1])                 # [ batch, x num_class, 1, target]
-            # W = tf.reshape(self._scoring_w, [-1, self.hidden_size]) # [num_class, hidden]
-            # W = tf.squeeze(tf.concat(0, [tf.diag(w) for w in tf.split(0, self.num_classes, W)])) # [num_class, hidden, hidden]
-            # W = tf.tile(W, tf.pack([tf.shape(self._target_embeds)[0], 1, 1]))                         # [ batch x num_class, hidden, hidden ]
-            # left = tf.batch_matmul(hidden, W)                 # [bact x num_class, 1, hidden]
-            # right = tf.squeeze(tf.batch_matmul(left, target, adj_y=True), [1,2]) # [batch x num_class]
-                        
-            # class_logits = (tf.reshape(right, tf.pack([tf.shape(self._target_embeds)[0], self.num_classes]))
-            #                + self._scoring_b) # [batch, num_class]
-            # self._predictions = tf.argmax(class_logits, 1, name="predict")
-            # self._predict_probs = tf.nn.softmax(class_logits, name="predict_probabilities")
-            # pred_scores = tf.reduce_max(scores, 1)
+            ### TENSOR TRIPLE PRODUCT ###
+            # left_target, right_target = tf.split(1, 2, self._target_embeds)
+            # self.ws = [ tf.get_variable("score_w_"+str(i), [self.hidden_size, self.word_embed_size, self.word_embed_size])
+            #             for i in range(self.num_classes) ]
+            # # # self.hs = [ tf.get_variable("score_h_"+str(i), [self.hidden_size, self.hidden_size])
+            # # #             for i in range(self.num_classes) ]    
+            # self.score_bias = tf.Variable(tf.zeros([self.num_classes], dtype=tf.float32), name="score_b")
+            # # # scores = tf.concat(1,
+            # # #                    [ tf.squeeze( tf.batch_matmul( # [ batch x 1 x 1] -> [ batch x 1 ]
+            # # #                                     tf.expand_dims(self._final_state, [1]), # [ batch x 1 x hidden ]
+            # # #                                     tf.expand_dims( # [ batch x hidden x 1 ]
+            # # #                                         tf.matmul(self._target_embeds, w), # [ batch x hidden ]
+            # # #                                                   [2])),
+            # # #                                     [2])
+            # # #                      for w in self.ws ])
+
+            # scores = (tf.concat(1,
+            #                    [ tf.expand_dims(batch_triple_inner(w, 
+            #                                                        self._final_state, 
+            #                                                        left_target, 
+            #                                                        right_target),
+            #                                     [1])
+
+            #                    # tf.squeeze( tf.batch_matmul( # [ batch x 1 x 1] -> [ batch x 1 ]
+            #                    #                  tf.expand_dims( # [ batch x hidden x 1 ]
+            #                    #                      tf.matmul(self._final_state, h), # [ batch x hidden ]
+            #                    #                                [1]),
+            #                    #                  tf.expand_dims( # [ batch x hidden x 1 ]
+            #                    #                      tf.matmul(self._target_embeds, w), # [ batch x hidden ]
+            #                    #                                [2])),
+            #                    #              [2])
+            #                      for w in self.ws ])
+            #          )#+ self.score_bias)
+            # # scores += self.score_bias
+            # # print(scores.get_shape())
+            # self._predictions = tf.argmax(scores, 1, name="predict")
+            # self._predict_probs = tf.nn.softmax(scores, name="predict_probabilities")
         
         with tf.name_scope("Loss"):
             self._class_labels = tf.placeholder(tf.int64, [None, 1])
-            self._class_xent = tf.nn.sparse_softmax_cross_entropy_with_logits(class_logits, 
+            # self._class_xent = tf.nn.sparse_softmax_cross_entropy_with_logits(class_logits, 
+            #                                                                   tf.squeeze(self._class_labels, [1]))
+
+            ### SOFTMAX CROSS ENTROPY ###
+            self._class_xent = tf.nn.sparse_softmax_cross_entropy_with_logits(scores, 
                                                                               tf.squeeze(self._class_labels, [1]))
             self._avg_class_loss = tf.reduce_mean(self._class_xent)
-            # self._class_l2 = self._class_lambda*(tf.nn.l2_loss(self._softmax_w)
-            #                                     + tf.nn.l2_loss(self._softmax_b))
+
+            ### MARGIN RANKING BASED ###
+
+            self._class_l2 = self._class_lambda*(tf.nn.l2_loss(self.score_w)
+                                                + tf.nn.l2_loss(self.score_bias))
 
             # self._class_l2 = self._class_lambda*(tf.nn.l2_loss(self._scoring_w)
             #                                     + tf.nn.l2_loss(self._scoring_b)
             #                                     + tf.nn.l2_loss(self._hidden_w)
             #                                     + tf.nn.l2_loss(self._hidden_b))
 
-            self._class_l2 = self._class_lambda*(tf.nn.l2_loss(self._scoring_w)
-                                                + tf.nn.l2_loss(self._scoring_b))
+            # self._class_l2 = self._class_lambda*( tf.add_n([tf.nn.l2_loss(w) for w in self.ws])
+            #                                     + tf.nn.l2_loss(self.score_w)
+            #                                     # + tf.add_n([tf.nn.l2_loss(h) for h in self.hs])
+            #                                     + tf.nn.l2_loss(self.score_bias))
 
             self._class_loss = self._avg_class_loss + self._class_l2
 
