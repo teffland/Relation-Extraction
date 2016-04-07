@@ -111,32 +111,32 @@ def sentence_to_sdps(sentence, min_len=1, max_len=7, verbose=False):
         elif X is common:
             sdp = []
             for token in Y_path:        # looks like (Y <- ... <- X <-) ...
-                sdp.append((smart_token_to_text(token), token.dep_))
+                sdp.append((smart_token_to_text(token), token.dep_, token.pos_))
                 if token is common:     # stop after X
                     break
             sdp = list(reversed(sdp))   # flip to get ... (-> X -> ... -> Y)
         elif Y is common:
             sdp = []
             for token in X_path:        # looks like (X <- ... <- Y <- ) ...
-                sdp.append((smart_token_to_text(token), token.dep_))
+                sdp.append((smart_token_to_text(token), token.dep_, token.pos_))
                 if token is common:     # stop after Y
                       break
         # CASE (3)
         else:
             sdp = []
             for token in (X_path):      # looks like (X <- ... <- Z <-) ...
-                sdp.append((smart_token_to_text(token), token.dep_))
+                sdp.append((smart_token_to_text(token), token.dep_, token.pos_))
                 if token is common:     # keep Z this time
                     break
             ysdp = []                   # need to keep track of seperate, then will reverse and extend later
             for token in Y_path:        # looks like (Y <- ... <-) Z <- ... 
                 if token is common:     # don't keep Z from this side
                     break
-                ysdp.append((smart_token_to_text(token), token.dep_))
+                ysdp.append((smart_token_to_text(token), token.dep_, token.pos_))
             sdp.extend(list(reversed(ysdp))) # looks like (X <- ... <- Z -> ... ) -> Y)
         # convert endpoints of the paths to placeholder X and Y tokens
-        sdp[0] = (u'<X>', sdp[0][1])
-        sdp[-1] = (u'<Y>', sdp[-1][1])
+        sdp[0] = (u'<X>', sdp[0][1], sdp[0][2])
+        sdp[-1] = (u'<Y>', sdp[-1][1], sdp[-1][2])
 
 
         ### CASE WHERE WE DONT INCLUDE X AND Y IN PATH.  THIS CAN LEAD TO EMPTY PATHS ###
@@ -186,7 +186,7 @@ def sentence_to_sdps(sentence, min_len=1, max_len=7, verbose=False):
         yield {'path': sdp, 'target':(X.text.lower(), Y.text.lower())}
 
 def create_vocab_from_data(sentences, vocab_limit=None, 
-                           min_count=None, dep=False, 
+                           min_count=None, dep=False, pos=True,
                            filter_oov=False, print_oov=False,
                            oov_count=1):
     """Create a vocab index, inverse index, and unigram distribution over tokens from a list of spacy sentences
@@ -197,6 +197,8 @@ def create_vocab_from_data(sentences, vocab_limit=None,
         for token in sentence:
             if dep:
                 counts[token.dep_] += 1
+            elif pos:
+                counts[token.pos_] += 1
             else:
                 if filter_oov and not token.is_oov and token.text not in [u' ', u'\n\n']:
                     counts[token.text.lower()] += 1
@@ -290,7 +292,7 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen,
         'min_count':min_count,        
         'vocab_limit':vocab_limit,
         'sentence_file':infile,
-        'out_prefix':outfile
+        'out_prefix':outfile if not include_ends else outfile+'_include_'
     }
     
     start = time()
@@ -309,12 +311,17 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen,
     vocab, vocab2int, int2vocab, vocab_dist = create_vocab_from_data(sentences,
                                                                  vocab_limit=FLAGS['vocab_limit'],
                                                                  min_count=FLAGS['min_count'],
-                                                                 dep=False,
+                                                                 dep=False, pos=False,
                                                                  oov_count=1)
     dep_vocab, dep2int, int2dep, dep_dist = create_vocab_from_data(sentences,
                                                                  vocab_limit=None,
                                                                  min_count=0,
-                                                                 dep=True,
+                                                                 dep=True, pos=False,
+                                                                 oov_count=1)
+    pos_vocab, pos2int, int2pos, pos_dist = create_vocab_from_data(sentences,
+                                                                 vocab_limit=None,
+                                                                 min_count=0,
+                                                                 dep=False, pos=True,
                                                                  oov_count=1)
     # write out the data
     print("(%i:%i:%i) Writing data..." % sec_to_hms(time()-start))
@@ -325,8 +332,10 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen,
         for sdp in all_data:
             # convert from tokens to indices
             post_process_sdp(sdp)
-            sdp['path'] = [ (vocab2idx(x[0], vocab2int), vocab2idx(x[1], dep2int)) for x in sdp['path'] ]
-            sdp['target'] = [ vocab2idx(sdp['target'][0], vocab2int), vocab2idx(sdp['target'][1], vocab2int) ]
+            sdp['path'] = [ (vocab2idx(x[0], vocab2int), vocab2idx(x[1], dep2int), vocab2idx(x[2], pos2int)) 
+                            for x in sdp['path'] ]
+            sdp['target'] = [ vocab2idx(sdp['target'][0], vocab2int), 
+                              vocab2idx(sdp['target'][1], vocab2int) ]
             if is_ok_sdp(sdp, int2vocab):
                 sdp_count += 1
                 # write out the dict as json line
@@ -340,6 +349,10 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen,
 
     with open(FLAGS['out_prefix'] + str(FLAGS['num_sentences'])+'_dep', 'w') as outfile:
         for term in zip(dep_vocab, dep_dist):
+            outfile.write(json.dumps(term)+'\n')
+
+    with open(FLAGS['out_prefix'] + str(FLAGS['num_sentences'])+'_pos', 'w') as outfile:
+        for term in zip(pos_vocab, pos_dist):
             outfile.write(json.dumps(term)+'\n')
 
     print("="*80)

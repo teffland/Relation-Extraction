@@ -96,33 +96,33 @@ def convert_nominals_to_sdp(X, Y, include_ends=False, verbose=False):
     elif X is common:
         sdp = []
         for token in Y_path:        # looks like (Y <- ... <- X <-) ...
-            sdp.append((smart_token_to_text(token), token.dep_))
+            sdp.append((smart_token_to_text(token), token.dep_, token.pos_))
             if token is common:     # stop after X
                 break
         sdp = list(reversed(sdp))   # flip to get ... (-> X -> ... -> Y)
     elif Y is common:
         sdp = []
         for token in X_path:        # looks like (X <- ... <- Y <- ) ...
-            sdp.append((smart_token_to_text(token), token.dep_))
+            sdp.append((smart_token_to_text(token), token.dep_, token.pos_))
             if token is common:     # stop after Y
                   break
     # CASE (3)
     else:
         sdp = []
         for token in (X_path):      # looks like (X <- ... <- Z <-) ...
-            sdp.append((smart_token_to_text(token), token.dep_))
+            sdp.append((smart_token_to_text(token), token.dep_, token.pos_))
             if token is common:     # keep Z this time
                 break
         ysdp = []                   # need to keep track of seperate, then will reverse and extend later
         for token in Y_path:        # looks like (Y <- ... <-) Z <- ... 
             if token is common:     # don't keep Z from this side
                 break
-            ysdp.append((smart_token_to_text(token), token.dep_))
+            ysdp.append((smart_token_to_text(token), token.dep_, token.pos_))
         sdp.extend(list(reversed(ysdp))) # looks like (X <- ... <- Z -> ... ) -> Y)
     # convert endpoints of the paths to placeholder X and Y tokens
     if not include_ends:
-        sdp[0] = (u'<X>', sdp[0][1])
-        sdp[-1] = (u'<Y>', sdp[-1][1])
+        sdp[0] = (u'<X>', sdp[0][1], sdp[0][2])
+        sdp[-1] = (u'<Y>', sdp[-1][1], sdp[-1][2])
 #     if len(sdp) < min_len or len(sdp) > max_len:
 #         continue                    # skip ones that are too short or long
     return {'path': sdp, 'target':(X.text.lower(), Y.text.lower())}
@@ -134,18 +134,18 @@ def convert_nominals_to_sentence(X, Y, sent, include_ends=False, verbose=False):
     for i, token in enumerate(sent):
         if token is X:
             started = True
-            sdp.append((smart_token_to_text(token), token.dep_))
+            sdp.append((smart_token_to_text(token), token.dep_, token.pos_))
         elif token is Y:
-            sdp.append((smart_token_to_text(token), token.dep_))
+            sdp.append((smart_token_to_text(token), token.dep_, token.pos_))
             started = False
             break
         if started:
-            sdp.append((smart_token_to_text(token), token.dep_))
+            sdp.append((smart_token_to_text(token), token.dep_, token.pos_))
 
     # convert endpoints of the paths to placeholder X and Y tokens
     if not include_ends:
-        sdp[0] = (u'<X>', sdp[0][1])
-        sdp[-1] = (u'<Y>', sdp[-1][1])
+        sdp[0] = (u'<X>', sdp[0][1], sdp[0][2])
+        sdp[-1] = (u'<Y>', sdp[-1][1], sdp[-1][2])
 #     if len(sdp) < min_len or len(sdp) > max_len:
 #         continue                    # skip ones that are too short or long
     return {'path': sdp, 'target':(X.text.lower(), Y.text.lower())}
@@ -303,7 +303,7 @@ def load_semeval_data(shuffle_seed=42, include_ends=False, sentence=False):
             print("Skipping this one... %r" % text_line)
             print(sent, sdp, target, label)
             sent = [nlp(u'<OOV>')]*3
-            sdp = [[u'<OOV>',u'<OOV>']]
+            sdp = [[u'<OOV>',u'<OOV>', u'<OOV>']]
             target= [u'<OOV>',u'<OOV>']
         test['raws'].append(line)
         test['sents'].append(sent)

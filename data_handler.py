@@ -20,7 +20,7 @@ class DataHandler(object):
               % (len(self._paths) + len(self._valid_paths), 
                 len(self._paths), len(self._valid_paths),
                 100-self._valid_percent*100, self._valid_percent*100))
-        print("Vocab size: %i Dep size: %i" % (self._vocab_size, self._dep_size))
+        print("Vocab size: %i Dep size: %i POS size: %i" % (self._vocab_size, self._dep_size, self._pos_size))
 
     def read_data(self, shuffle_seed=42):
         print("Creating Data objects...")
@@ -35,6 +35,11 @@ class DataHandler(object):
         self._paths = [ datum['path'] for datum in data ]
         self._max_seq_len = max([ len(path) for path in self._paths ])
         self._targets = [ datum['target'] for datum in data] # targets get doubly wrapped in lists
+
+        # create a distribution of targets for target_neg in batch generatiom
+        # FOR NOW: just make a set and we'll sample uniform
+        #   but since it's not aggregated, it's still sampleing unigram
+        self._target_set = [t[0] for t in self._targets] + [t[1] for t in self._targets]
         
         #make sure all of the paths have same depth and all the targets have depth 2
         assert len(set(len(p) for path in self._paths for p in path)) == 1, "Not all path tuples have same len"
@@ -70,6 +75,18 @@ class DataHandler(object):
         self._dep2int = {v:i for (i,v) in enumerate(self._dep_vocab)}
         self._int2dep = {i:v for (v,i) in self._dep2int.items()}
         self._dep_size = len(self._dep_vocab)
+
+        # read in pos vocab and distribution
+        pos_and_dist = []
+        with open(self._data_prefix+"_pos", 'r') as f:
+            for line in f:
+                pos_and_dist.append(json.loads(line))
+        self._pos_vocab = [x[0] for x in pos_and_dist]
+        self._true_pos_dist = [x[1] for x in pos_and_dist]
+        self._pos_dist = self._true_pos_dist
+        self._pos2int = {v:i for (i,v) in enumerate(self._pos_vocab)}
+        self._int2pos = {i:v for (v,i) in self._pos2int.items()}
+        self._pos_size = len(self._pos_vocab)
         print("Done creating Data objects")
 
     def shuffle_data(self):
@@ -110,7 +127,9 @@ class DataHandler(object):
             end = len(inputs)
 #             print("Not full batch")
         inputs = inputs[start:end]
+        # print("Input targets: ", targets )
         targets = np.array(targets[start:end])
+        # print("Batch targets: ", targets)
         labels = np.ones(targets.shape[0]).reshape((-1, 1))
         input_mat, len_vec = self._sequences_to_tensor(inputs)
         # generate the negative samples
@@ -123,26 +142,46 @@ class DataHandler(object):
                 neg_level = min(2, neg_level)
             negatives = []
             neg_targets = []
+            
             for i, seq in enumerate(inputs): # for each true sequence
+                # seq = np.array(seq)
+                # print("*"*80)
+                # print("Original sequence, target: ", i, seq, targets[i])
                 for neg in range(neg_per): # create neg_per extra negative examples
                     neg_seq = seq[:]
-                    neg_target = targets[i]
+                    neg_target = list(targets[i, :])
+                    # print('og neg target, neg_sequence: ', neg_target, neg_seq)
                     if target_neg:
-                        # just one, pick a random target to flip
-                        if neg_level == 1:
-                            neg_idx = int(random.uniform(0,2)) # random 0,1 w/ 50% each
-                            neg_target[neg_idx] = np.random.choice(range(len(self._vocab)), 
-                                                   size=1, p=self._vocab_dist)[0]
-                        if neg_level == 2:
-                            neg_target = list(np.random.choice(range(len(self._vocab)), 
-                                                   size=2, p=self._vocab_dist))
+                        # always make the first negative example the reversed targets
+                        if neg == 0:
+                            temp = neg_target[:]
+                            neg_target[0] = temp[1]
+                            neg_target[1] = temp[0]
+                            # print("Reversed target negatives: ", neg_target, temp)
+                            del temp
+                        else:
+                            # just one, pick a random target to flip
+                            if neg_level == 1:
+                                neg_idx = int(random.uniform(0,2)) # random 0,1 w/ 50% each
+                                # neg_target[neg_idx] = np.random.choice(range(len(self._target_set)), 
+                                #                        size=1)[0]
+                                neg_target[neg_idx] = self._target_set[int(random.uniform(0,len(self._target_set)))]
+                            if neg_level == 2:
+                                neg_target = np.array([self._target_set[int(random.uniform(0,len(self._target_set)))],
+                                              self._target_set[int(random.uniform(0,len(self._target_set)))]])
+                            # print("Target negatives: ", neg_target)
+                                # neg_target = list(np.random.choice(range(len(self._target_set)), 
+                                #                        size=2))
                     else: # otherwise we're corrupting the sequences, not the targets
                         # break sticks to split up noise into vocab and deps
                         # pick an int that's less that seq - <X> - <Y>
                         # but make sure that's not more than we asked for
-                        num_v = min(int(random.uniform(0, max(len(seq)-2, 1))), neg_level)
-                        # print(num_v, len(seq))
-                        num_d = neg_level - num_v
+                        # num_v = min(int(random.uniform(0, max(len(seq)-2, 1))), neg_level)
+                        # num_d = neg_level - num_v
+
+                        # simpler way,  just only replace words
+                        num_v = min(neg_level, len(seq)-2)
+                        num_d = 0
                         if num_v: # choice breaks if zero
                             v_rand_idx = np.random.choice(range(1, len(seq)-1), size=num_v)
                             v_noise = np.random.choice(range(len(self._vocab)), 
@@ -156,6 +195,7 @@ class DataHandler(object):
                             # do the replacements
                             for j, d in zip(d_rand_idx, d_noise):
                                 neg_seq[j][1] = d
+                    # print("Negative sample ", neg, neg_seq, neg_target)
                     negatives.append(neg_seq)
                     neg_targets.append(neg_target)
             neg_mat, neg_len = self._sequences_to_tensor(negatives)
@@ -235,14 +275,36 @@ class DataHandler(object):
             # print(vocab, vocab2int.keys()[-1], vocab2int['<OOV>'])
             return vocab2int['<OOV>'] # <OOV>
 
-    def sequence_to_sentence(self, sequence, len_=10e5, show_dep=False, delim=" "):
+    def sequence_to_sentence(self, sequence, len_=10e5, show_dep=False, show_pos=False, delim=" "):
         # does the sequence contain the dependencies also?
         if isinstance(sequence[0], int): # this is just a sinlg elist not list of lists
             return delim.join([ self._int_to_vocab(x, self._int2vocab) 
                                    for (i, x) in enumerate(sequence) 
                                    if i < len_ ] )
 
-        elif set([len(d) for d in sequence]) == set([2]): # list of lists of pairs of ints
+        elif set([len(d) for d in sequence]) == set([3]): # list of lists of pairs of ints
+            if show_dep and show_pos:
+                return delim.join([ "("+self._int_to_vocab(x[0], self._int2vocab)
+                                    +", "+self._int_to_vocab(x[1], self._int2dep)
+                                    +", "+self._int_to_vocab(x[2], self._int2pos)+")"
+                                     for i, x in enumerate(sequence) 
+                                     if i < len_ ] )
+            elif show_dep:
+                return delim.join([ "("+self._int_to_vocab(x[0], self._int2vocab)
+                                    +", "+self._int_to_vocab(x[1], self._int2dep)+")"
+                                     for i, x in enumerate(sequence) 
+                                     if i < len_ ] )
+            elif show_pos:
+                return delim.join([ "("+self._int_to_vocab(x[0], self._int2vocab)
+                                    +", "+self._int_to_vocab(x[2], self._int2pos)+")"
+                                     for i, x in enumerate(sequence) 
+                                     if i < len_ ] )
+            else:   
+                return delim.join([ self._int_to_vocab(x[0], self._int2vocab) 
+                                   for (i, x) in enumerate(sequence) 
+                                   if i < len_ ] )
+
+        elif set([len(d) for d in sequence]) == set([2]): # list of lists of pairs of ints)
             if show_dep:
                 return delim.join([ "("+self._int_to_vocab(x[0], self._int2vocab)
                                     +", "+self._int_to_vocab(x[1], self._int2dep)+")"
@@ -259,26 +321,31 @@ class DataHandler(object):
                              for i, x in enumerate(sequence) 
                              if i < len_ ])
         else:
-            print("Not sure what to make of sequence %r" % sequence)
+            print("[DH->Sequence to sentence] Not sure what to make of sequence: %r" % sequence)
 
     def sequences_to_sentences(self, sequences, lens=None,
-                               show_dep=False, 
+                               show_dep=False, show_pos=False,
                                delim=" "):
         # is expecting a list of lists of lists eg, a list of paths, 
         # where a path is a list of lists of tokens and deps
         if lens:
-            return [ self.sequence_to_sentence(sequence, len_, show_dep=show_dep, delim=delim) 
+            return [ self.sequence_to_sentence(sequence, len_, show_dep=show_dep, show_pos=show_pos, delim=delim) 
                     for (sequence, len_) in zip(sequences, lens) ]
         else:
-            return [ self.sequence_to_sentence(sequence, show_dep=show_dep, delim=delim) 
+            return [ self.sequence_to_sentence(sequence, show_dep=show_dep, show_pos=show_pos, delim=delim) 
                     for sequence in sequences ]
 
-    def sentence_to_sequence(self, sentence, len_=10e5, show_dep=False, delim=" "):
+    def sentence_to_sequence(self, sentence, len_=10e5):
         try:
             if isinstance(sentence[0], (unicode, str)): # this is just a sinlg elist not list of lists
                 return [ self._vocab_to_int(x, self._vocab2int) 
                                        for (i, x) in enumerate(sentence) 
                                        if i < len_ ]
+            elif set([len(d) for d in sentence]) == set([3]): # list of lists of pairs of ints
+                return [ [self._vocab_to_int(x[0], self._vocab2int),
+                        self._vocab_to_int(x[1], self._dep2int),
+                        self._vocab_to_int(x[2], self._pos2int)]
+                        for i, x in enumerate(sentence) ]
 
             elif set([len(d) for d in sentence]) == set([2]): # list of lists of pairs of ints
                 return [ [self._vocab_to_int(x[0], self._vocab2int),
@@ -304,13 +371,13 @@ class DataHandler(object):
             return [ self.sentence_to_sequence(sentence) 
                     for sentence in sentences ]
 
-    def readable_data(self, valid=False, show_dep=False):
+    def readable_data(self, valid=False, show_dep=False, show_pos=False):
         if valid:
-            paths = self.sequences_to_sentences(self._valid_paths, show_dep=show_dep)
+            paths = self.sequences_to_sentences(self._valid_paths, show_dep=show_dep, show_pos=show_pos)
             targets = self.sequences_to_sentences(self._valid_targets, delim=", ")
         else:
             # print(self._paths)
-            paths = self.sequences_to_sentences(self._paths, show_dep=show_dep)
+            paths = self.sequences_to_sentences(self._paths, show_dep=show_dep, show_pos=show_pos)
             targets = self.sequences_to_sentences(self._targets, delim=", ") 
         return paths, targets
         
@@ -342,7 +409,10 @@ class DataHandler(object):
         return self._int_to_vocab(index, self._int2vocab)
 
     def dep_at(self, index):
-        return self._int_to_vocab(index, self._int2vocab)
+        return self._int_to_vocab(index, self._int2dep)
+
+    def pos_at(self, index):
+        return self._int_to_vocab(index, self._int2pos)
 
     @property
     def data_prefix(self):
@@ -371,3 +441,7 @@ class DataHandler(object):
     @property
     def dep_size(self):
         return self._dep_size
+
+    @property
+    def pos_size(self):
+        return self._pos_size
