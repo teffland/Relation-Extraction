@@ -35,15 +35,22 @@ class DataHandler(object):
         self._paths = [ datum['path'] for datum in data ]
         self._max_seq_len = max([ len(path) for path in self._paths ])
         self._targets = [ datum['target'] for datum in data] # targets get doubly wrapped in lists
-
+        # print(self._targets)
         # create a distribution of targets for target_neg in batch generatiom
         # FOR NOW: just make a set and we'll sample uniform
         #   but since it's not aggregated, it's still sampleing unigram
-        self._target_set = [t[0] for t in self._targets] + [t[1] for t in self._targets]
-        
-        #make sure all of the paths have same depth and all the targets have depth 2
+        self._target_list = [t for target in self._targets for t in target]
+        targets_dist = {}
+        for target in self._target_list:
+            if target in targets_dist:
+                targets_dist[target] += 1
+            else:
+                targets_dist[target] = 1
+        self._true_target_dist = list(np.array(targets_dist.values()) / np.sum(targets_dist.values(), dtype=np.float32))
+        self._target_dist = self._true_target_dist[:]
+        #make sure all of the paths have same depth
         assert len(set(len(p) for path in self._paths for p in path)) == 1, "Not all path tuples have same len"
-        assert set(len(target) for target in self._targets) == set([2]), "All target tuples must be pairs"
+        self._target_len = len(self._targets[0])
 
         # now chop off a validation set. Make it 
         self._valid_split_idx = int((1-self._valid_percent)*len(self._paths))
@@ -127,6 +134,11 @@ class DataHandler(object):
             end = len(inputs)
 #             print("Not full batch")
         inputs = inputs[start:end]
+
+        # create a list of if the target being predicted is X|Y or not
+        # this is used to pick which RNN will look at the sequence
+        x_tag = self._vocab2int['<X>']
+        predict_x = [ 1 if input_[-1][0] == x_tag else 0 for input_ in inputs]
         # print("Input targets: ", targets )
         targets = np.array(targets[start:end])
         # print("Batch targets: ", targets)
@@ -142,6 +154,7 @@ class DataHandler(object):
                 neg_level = min(2, neg_level)
             negatives = []
             neg_targets = []
+            neg_pred_x = []
             
             for i, seq in enumerate(inputs): # for each true sequence
                 # seq = np.array(seq)
@@ -152,26 +165,28 @@ class DataHandler(object):
                     neg_target = list(targets[i, :])
                     # print('og neg target, neg_sequence: ', neg_target, neg_seq)
                     if target_neg:
-                        # always make the first negative example the reversed targets
-                        if neg == 0:
-                            temp = neg_target[:]
-                            neg_target[0] = temp[1]
-                            neg_target[1] = temp[0]
-                            # print("Reversed target negatives: ", neg_target, temp)
-                            del temp
-                        else:
-                            # just one, pick a random target to flip
-                            if neg_level == 1:
-                                neg_idx = int(random.uniform(0,2)) # random 0,1 w/ 50% each
-                                # neg_target[neg_idx] = np.random.choice(range(len(self._target_set)), 
-                                #                        size=1)[0]
-                                neg_target[neg_idx] = self._target_set[int(random.uniform(0,len(self._target_set)))]
-                            if neg_level == 2:
-                                neg_target = np.array([self._target_set[int(random.uniform(0,len(self._target_set)))],
-                                              self._target_set[int(random.uniform(0,len(self._target_set)))]])
-                            # print("Target negatives: ", neg_target)
-                                # neg_target = list(np.random.choice(range(len(self._target_set)), 
-                                #                        size=2))
+                        # single tarets is the simpler case.  Just sample unigram target
+                        if self._target_len == 1:
+                            neg_target[0] = self._sample_distribution(self._target_dist)
+                        else: # double targets requires some care
+                            # always make the first negative example the reversed targets
+                            if neg == 0:
+                                temp = neg_target[:]
+                                neg_target[0] = temp[1]
+                                neg_target[1] = temp[0]
+                                # print("Reversed target negatives: ", neg_target, temp)
+                                del temp
+                            else:
+                                # just one, pick a random target to flip
+                                if neg_level == 1:
+                                    neg_idx = int(random.uniform(0,2)) # random 0,1 w/ 50% each
+                                    # neg_target[neg_idx] = np.random.choice(range(len(self._target_list)), 
+                                    #                        size=1)[0]
+                                    neg_target[neg_idx] = self._target_list[int(random.uniform(0,len(self._target_list)))]
+                                if neg_level == 2:
+                                    neg_target = [self._target_list[int(random.uniform(0,len(self._target_list)))],
+                                                  self._target_list[int(random.uniform(0,len(self._target_list)))]]
+
                     else: # otherwise we're corrupting the sequences, not the targets
                         # break sticks to split up noise into vocab and deps
                         # pick an int that's less that seq - <X> - <Y>
@@ -198,20 +213,26 @@ class DataHandler(object):
                     # print("Negative sample ", neg, neg_seq, neg_target)
                     negatives.append(neg_seq)
                     neg_targets.append(neg_target)
+                    neg_pred_x.append(predict_x[i])
             neg_mat, neg_len = self._sequences_to_tensor(negatives)
             neg_labels = np.zeros_like(neg_len)
+            neg_pred_x = np.array(neg_pred_x).astype(np.int32).reshape((-1,1))
+            predict_x = np.array(predict_x).reshape((-1, 1))
+            # print(predict_x.shape, neg_pred_x.shape)
             all_inputs = np.vstack((input_mat, neg_mat)).astype(np.int32)
-            all_targets = np.vstack((targets, np.array(neg_targets))).astype(np.int32)
+            all_targets = np.vstack((targets, np.array(neg_targets))).astype(np.int32).reshape([-1, self._target_len])
             all_labels = np.vstack((labels, neg_labels)).astype(np.int32)
             all_lengths = np.vstack((len_vec, neg_len)).astype(np.int32)
+            all_pred_x = np.vstack((predict_x, neg_pred_x)).astype(np.int32)
         else:
             all_inputs = input_mat.astype(np.int32)
-            all_targets = targets.astype(np.int32)
+            all_targets = targets.astype(np.int32).reshape([-1, self._target_len])
             all_labels = labels.astype(np.int32)
             all_lengths = len_vec.astype(np.int32)
-        return all_inputs, all_targets, all_labels, all_lengths
+            all_pred_x = np.array(predict_x).reshape((-1,1)).astype(np.int32)
+        return all_inputs, all_targets, all_labels, all_lengths, all_pred_x
 
-    def _generate_class_batch(self, offset, batch_size, inputs, targets, labels):
+    def _generate_class_batch(self, offset, batch_size, inputs, targets, labels, singles=False):
         """Expects the data as list of lists of indices
 
         Converts them to matrices of indices, lang model labels, and lengths"""
@@ -223,10 +244,30 @@ class DataHandler(object):
         inputs = inputs[start:end]
         targets = np.array(targets[start:end]).astype(np.int32)
         labels = np.array(labels[start:end]).reshape([-1, 1]).astype(np.int64)
-        inputs, lens = self._sequences_to_tensor(inputs)
-        inputs = inputs.astype(np.int32)
-        lens = lens.astype(np.int32)
-        return inputs, targets, labels, lens
+        if singles: # split everything into X|Y and Y|X sequences
+            x_tag = self._vocab2int['<X>']
+            y_tag = self._vocab2int['<Y>']
+            x_inputs, y_inputs = [], []
+            for input_ in inputs:
+                x = input_[::-1]
+                x[-1][0] = x_tag
+                x_inputs.append(x)
+                y = input_[:]
+                y[-1][0] = y_tag
+                y_inputs.append(y)
+            x_targets, y_targets = np.split(targets, [1], axis=1)
+            x_inputs, lens = self._sequences_to_tensor(x_inputs)
+            y_inputs, _ = self._sequences_to_tensor(y_inputs)
+            x_inputs = x_inputs.astype(np.int32)
+            y_inputs = y_inputs.astype(np.int32)
+            lens = lens.astype(np.int32)
+            return x_inputs, y_inputs, x_targets, y_targets, labels, lens
+            
+        else:
+            inputs, lens = self._sequences_to_tensor(inputs)
+            inputs = inputs.astype(np.int32)
+            lens = lens.astype(np.int32)
+            return inputs, targets, labels, lens
     
     def batches(self, batch_size, target_neg=False, neg_per=5, neg_level=1, offset=0):
         num_steps = len(self._paths) // batch_size
@@ -239,25 +280,29 @@ class DataHandler(object):
                                        neg_per=neg_per, neg_level=neg_level)
 
     def validation_batch(self):
-        valid_inputs, valid_targets, valid_labels, valid_lens = self._generate_batch(0,    
-                                                              len(self._valid_targets), 
-                                                              self._valid_paths, 
-                                                              self._valid_targets, 
-                                                              neg_per=0)
-        return valid_inputs, valid_targets, valid_labels, valid_lens
+        return  self._generate_batch(0,    
+                                      len(self._valid_targets), 
+                                      self._valid_paths, 
+                                      self._valid_targets, 
+                                      neg_per=0)
 
-    def classification_batch(self, batch_size, inputs, targets, labels, offset=0, shuffle=False):
+        # return valid_inputs, valid_targets, valid_labels, valid_lens, val
+
+    def classification_batch(self, batch_size, inputs, targets, labels, offset=0, shuffle=False, singles=False):
         if shuffle:
             data = zip(inputs, targets, labels)
             random.shuffle(data)
             inputs, targets, labels = zip(*data)
-        return self._generate_class_batch(offset, batch_size, inputs, targets, labels)
+        return self._generate_class_batch(offset, batch_size, inputs, targets, labels, singles=singles)
     
     def scale_vocab_dist(self, power):
         self._vocab_dist = self._distribution_to_power(self._true_vocab_dist, power)
         
     def scale_dep_dist(self, power):
         self._dep_dist = self._distribution_to_power(self._true_dep_dist, power)
+
+    def scale_target_dist(self, power):
+        self._target_dist = self._distribution_to_power(self._true_target_dist, power)
 
 
     def _int_to_vocab(self, index, int2vocab):
@@ -413,6 +458,9 @@ class DataHandler(object):
 
     def pos_at(self, index):
         return self._int_to_vocab(index, self._int2pos)
+
+    def valid_size(self):
+        return len(self._valid_paths)
 
     @property
     def data_prefix(self):

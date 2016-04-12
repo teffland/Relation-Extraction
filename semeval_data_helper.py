@@ -177,7 +177,7 @@ def is_ok_sdp(sdp):#, int2vocab, oov_percent=75):
         return False
     return True
 
-def line_to_data(raw_line, include_ends=False, verbose=False, sentence=False):
+def line_to_data(raw_line, include_ends=False, verbose=False, sentence=False, single=False):
     sent = convert_raw_x(raw_line)
     e1 = sent[1]
     e2 = sent[2]
@@ -190,7 +190,16 @@ def line_to_data(raw_line, include_ends=False, verbose=False, sentence=False):
         print(sent)
 #     post_process_sdp(sdp)
     if is_ok_sdp(sdp):
-        return sent, sdp['path'], sdp['target']
+        if single: # create a duplicate reversed and replace both ends with <X> or <Y>
+            dup = {k:v[:] for k,v in sdp.items()} # duplicate
+            dup['path'] = dup['path'][::-1]       # reverse the path
+            dup['path'][-1] = (u'<X>', dup['path'][-1][1], dup['path'][-1][2]) # convert last to a directional token
+            sdp['path'][-1] = (u'<Y>', sdp['path'][-1][1], sdp['path'][-1][2]) # "
+            dup['target'] = [dup['target'][0]] # target is just the other entity, predict X|Y
+            sdp['target'] = [sdp['target'][1]] # Y|X, also other code expects targets as lists
+            return [sent]*2, [sdp['path'], dup['path']], [sdp['target'], dup['target']]
+        else:
+            return sent, sdp['path'], sdp['target']
     else:
         print("Bad sentence: %r" % raw_line )
         print(sent, sdp)
@@ -230,7 +239,7 @@ def line_to_label(raw_label_line, label2int):
     #     return label2int[line]
     return label2int[line]
 
-def load_semeval_data(shuffle_seed=42, include_ends=False, sentence=False):
+def load_semeval_data(shuffle_seed=42, include_ends=False, sentence=False, single=False):
     """Load in SemEval 2010 Task 8 Training file and return lists of tuples:
     
     Tuple form =  (spacy(stripped sentence), index of e1, index of e2)"""
@@ -248,32 +257,65 @@ def load_semeval_data(shuffle_seed=42, include_ends=False, sentence=False):
             text_line = text[4*cursor]
             label_line = text[4*cursor +1]
             comment = text[4*cursor + 2]
-            sent, sdp, target = line_to_data(text_line, include_ends=include_ends, sentence=sentence)
-            label = line_to_label(label_line, label2int)
-#             print(sent, sdp, target, label)
-            if not (sent and sdp and target):
-                print("Skipping this one... %r" % text_line)
-                print(sent, sdp, target, label)
-                continue
-            all_['raws'].append(text_line)
-            all_['sents'].append(sent)
-            all_['sdps'].append(sdp)
-            all_['targets'].append(target)
-            all_['labels'].append(label)
-            all_['comments'].append(comment)
-            if cursor < validation_index:
-                train['raws'].append(text_line)
-                train['sents'].append(sent)
-                train['sdps'].append(sdp)
-                train['targets'].append(target)
-                train['labels'].append(label)
-                train['comments'].append(comment)
-            else:
-                valid['raws'].append(text_line)
-                valid['sents'].append(sent)
-                valid['sdps'].append(sdp)
-                valid['targets'].append(target)
-                valid['labels'].append(label)
+            if single: # really just for use by *2sdp for auxilary task
+                sent, sdp, target = line_to_data(text_line, include_ends=include_ends, 
+                                                      sentence=sentence, single=single)
+                # print(sent, sdp, target)
+                label = line_to_label(label_line, label2int)
+    #             print(sent, sdp, target, label)
+                if not (sent and sdp and target):
+                    print("Skipping this one... %r" % text_line)
+                    print(sent, sdp, target, label)
+                    continue
+                num = len(sent)# number per
+                all_['raws'].extend([text_line]*num)
+                all_['sents'].extend(list(sent))
+                all_['sdps'].extend(list(sdp))
+                all_['targets'].extend(list(target))
+                all_['labels'].extend([label]*num)
+                all_['comments'].extend([comment]*num)
+                if cursor < validation_index:
+                    train['raws'].extend([text_line]*num)
+                    train['sents'].extend(list(sent))
+                    train['sdps'].extend(list(sdp))
+                    train['targets'].extend(list(target))
+                    train['labels'].extend([label]*num)
+                    train['comments'].extend([comment]*num)
+                else:
+                    valid['raws'].extend([text_line]*num)
+                    valid['sents'].extend(list(sent))
+                    valid['sdps'].extend(list(sdp))
+                    valid['targets'].extend(list(target))
+                    valid['labels'].extend([label]*num)
+                    valid['comments'].extend([comment]*num)
+            else: # else we only get one per line
+                sent, sdp, target = line_to_data(text_line, include_ends=include_ends, 
+                                                 sentence=sentence, single=single)
+                label = line_to_label(label_line, label2int)
+    #             print(sent, sdp, target, label)
+                if not (sent and sdp and target):
+                    print("Skipping this one... %r" % text_line)
+                    print(sent, sdp, target, label)
+                    continue
+                all_['raws'].append(text_line)
+                all_['sents'].append(sent)
+                all_['sdps'].append(sdp)
+                all_['targets'].append(target)
+                all_['labels'].append(label)
+                all_['comments'].append(comment)
+                if cursor < validation_index:
+                    train['raws'].append(text_line)
+                    train['sents'].append(sent)
+                    train['sdps'].append(sdp)
+                    train['targets'].append(target)
+                    train['labels'].append(label)
+                    train['comments'].append(comment)
+                else:
+                    valid['raws'].append(text_line)
+                    valid['sents'].append(sent)
+                    valid['sdps'].append(sdp)
+                    valid['targets'].append(target)
+                    valid['labels'].append(label)
             #     valid['comments'].append(comment)
     # shuffle all and take the last validation_size as validation, rest as test
     if shuffle_seed:
@@ -293,7 +335,8 @@ def load_semeval_data(shuffle_seed=42, include_ends=False, sentence=False):
     print("Num valididation: %i" % len(valid['labels']))
     assert sorted(label2int.values()) == range(19) # 2 for each 9 asymmetric relations and 1 other
     
-    ### TEST DATA ### (has no labels)
+    ### TEST DATA ### (has no labels, is not used in duplicate form so don't output it)
+    # NOTE: converting test data into duplicate form is not implemented
     test_txt_file = "SemEval2010_task8_all_data/SemEval2010_task8_testing/TEST_FILE.txt"
     test = {'raws':[], 'sents':[], 'sdps':[], 'targets':[]}
     text = open(test_txt_file, 'r').readlines()

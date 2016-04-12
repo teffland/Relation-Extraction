@@ -264,7 +264,7 @@ def post_process_sdp(sdp):
     sdp['path'] = [x for x in sdp['path'] if x[0] not in bad_tokens]
     return sdp
 
-def is_ok_sdp(sdp, vocab2int, ok_pos_structures, oov_percent=75):
+def is_ok_sdp(sdp, vocab2int, ok_dep_structures, oov_percent=75):
     """ Helper function to mak sure SDP isn't a poor example.
 
     Filters used to identify bas data:
@@ -275,7 +275,8 @@ def is_ok_sdp(sdp, vocab2int, ok_pos_structures, oov_percent=75):
     """
     oov = vocab2int[u'<OOV>']
     # print(oov, sdp['target'])
-    if sdp['target'][0] == oov or sdp['target'][1] == oov:
+    if sum(t == oov for t in sdp['target']):
+        # print('bad target', sdp['target'])
         return False
     oov_count = len([ t for t in sdp['path'] if t[0] == oov])
     too_many = int((oov_percent/100.0)*len(sdp['path']))
@@ -285,8 +286,8 @@ def is_ok_sdp(sdp, vocab2int, ok_pos_structures, oov_percent=75):
         return False
 
     # get rid of pos structures not in the set
-    pos_structure = tuple([ p[2] for p in sdp['path'] ])
-    if pos_structure not in ok_pos_structures:
+    dep_structure = tuple([ p[1] for p in sdp['path'] ])
+    if dep_structure not in ok_dep_structures:
         # print("Bad structure: %r" % list(pos_structure))
         return False 
     return True
@@ -316,13 +317,18 @@ def sec_to_hms(seconds):
 @click.option('--maxlen', default=10, help="Maximum length of the dependency path not including nominals")
 @click.option('--include_ends', default=False, is_flag=True, help="Include the endpoints of the sdps, not <X>,<Y>")
 @click.option('--include_semeval', default=False, is_flag=True, help="Whether to include semeval training instances in data")
-def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen, include_ends, include_semeval):
+@click.option('--single', default=False, is_flag=True, help="Whether to convert an SDP into two with a single target per")
+def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen, include_ends, include_semeval, single):
+    if include_ends:
+        outfile += 'include_'
+    if single:
+        outfile += 'single_'
     FLAGS = {
         'num_sentences': num_sentences, # max is 31661479
         'min_count':min_count,        
         'vocab_limit':vocab_limit,
         'sentence_file':infile,
-        'out_prefix':outfile if not include_ends else outfile+'include_'
+        'out_prefix':outfile
     }
     
     start = time()
@@ -337,7 +343,9 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen,
             break
         wiki_sentences.append(nlp(unicode(line.strip())))
         
-    train, valid, test, label2int, int2label = sdh.load_semeval_data(shuffle_seed=0, include_ends=include_ends)
+    train, valid, test, label2int, int2label = sdh.load_semeval_data(shuffle_seed=0, include_ends=include_ends, single=single)
+    # semdata = sdh.load_semeval_data(shuffle_seed=0, include_ends=include_ends, single=single)
+    # print(semdata)
     sem_sentences = [ sent[0] for sent in train['sents']+valid['sents']+test['sents'] ]
 
     print("(%i:%i:%i) Creating vocab..." % sec_to_hms(time()-start))
@@ -348,7 +356,8 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen,
                                                                  dep=False, pos=False,
                                                                  oov_count=1)
     dep_vocab, dep2int, int2dep, dep_dist = create_vocab_from_data(wiki_sentences,
-                                                                 important_sentences=None,                                                                 vocab_limit=None,
+                                                                 important_sentences=None,                                                                 
+                                                                 vocab_limit=None,
                                                                  min_count=0,
                                                                  dep=True, pos=False,
                                                                  oov_count=1)
@@ -359,8 +368,8 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen,
                                                                  dep=False, pos=True,
                                                                  oov_count=1)
     # convert the pos_structures to indices under this vocab mapping
-    from sdp_pos_structures import ok_pos_structures
-    ok_pos_structures = set([tuple(pos2int[p] for p in pos) for pos in ok_pos_structures])
+    from sdp_dep_structures import ok_dep_structures
+    ok_dep_structures = set([tuple(dep2int[d] for d in dep) for dep in ok_dep_structures])
     # reformat semeval data to a form amenable with wiki
     sem_data = [{'path':sdp, 'target':target, 'sent':sent[0].text} for (sdp, target, sent)
                 in zip(train['sdps']+valid['sdps'], 
@@ -378,10 +387,12 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen,
                     records.write("%s" % json.dumps(sdp))
                     # convert from tokens to indices
                     post_process_sdp(sdp)
+                    # print(sdp['path'], sdp['target'])
                     sdp['path'] = [ (vocab2idx(x[0], vocab2int), vocab2idx(x[1], dep2int), vocab2idx(x[2], pos2int)) 
                                     for x in sdp['path'] ]
-                    sdp['target'] = [ vocab2idx(sdp['target'][0], vocab2int), vocab2idx(sdp['target'][1], vocab2int) ]
-                    if is_ok_sdp(sdp, vocab2int, ok_pos_structures):
+                    sdp['target'] = [ vocab2idx(t, vocab2int) for t in sdp['target'] ]
+                    sdp['source'] = 'SEMEVAL'
+                    if is_ok_sdp(sdp, vocab2int, ok_dep_structures):
                         sdp_count += 1
                         # write out the dict as json line
                         outfile.write(json.dumps(sdp) + '\n')
@@ -397,12 +408,26 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen,
                     post_process_sdp(sdp)
                     sdp['path'] = [ (vocab2idx(x[0], vocab2int), vocab2idx(x[1], dep2int), vocab2idx(x[2], pos2int)) 
                                     for x in sdp['path'] ]
-                    sdp['target'] = [ vocab2idx(sdp['target'][0], vocab2int), vocab2idx(sdp['target'][1], vocab2int) ]
-                    if is_ok_sdp(sdp, vocab2int, ok_pos_structures):
-                        sdp_count += 1
-                        # write out the dict as json line
-                        outfile.write(json.dumps(sdp) + '\n')
-                        records.write(" :: GOOD\n")
+                    sdp['target'] = [ vocab2idx(t, vocab2int) for t in sdp['target'] ]
+                    sdp['source'] = 'WIKI'
+                    if is_ok_sdp(sdp, vocab2int, ok_dep_structures):
+                        if single:
+                            dup = {k:v[:] for k,v in sdp.items()} # duplicate
+                            dup['path'] = dup['path'][::-1]       # reverse the path
+                            dup['path'][-1] = (vocab2idx(u'<X>', vocab2int), dup['path'][-1][1], dup['path'][-1][2]) # convert last to a directional token
+                            sdp['path'][-1] = (vocab2idx(u'<Y>', vocab2int), sdp['path'][-1][1], sdp['path'][-1][2]) # "
+                            dup['target'] = [dup['target'][0]] # target is just the other entity, predict X|Y
+                            sdp['target'] = [sdp['target'][1]] # Y|X, data handler expects targets as lists
+                            sdp_count += 2
+                            # write out the dict as json line
+                            outfile.write(json.dumps(sdp) + '\n')
+                            outfile.write(json.dumps(dup) + '\n')
+                            records.write(" :: GOOD\n")
+                        else:
+                            sdp_count += 1
+                            # write out the dict as json line
+                            outfile.write(json.dumps(sdp) + '\n')
+                            records.write(" :: GOOD\n")
                     else:
                         bad_sdp_count += 1
                         records.write(" :: BAD\n")
