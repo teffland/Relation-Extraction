@@ -301,6 +301,15 @@ def vocab2idx(token, vocab2int):
     else:
         return vocab2int[u'<OOV>'] # OOV conversion
 
+def idx2vocab(idx, int2vocab):
+    """ Convert a vocab item to it's index accounting for OOV, 
+    which is assumed to be the last element of the vocab
+    """
+    if idx in int2vocab:
+        return int2vocab[idx]
+    else:
+        return u'<OOV>' # OOV conversion
+
 def sec_to_hms(seconds):
     """Return triple of (hour,minutes,seconds) from seconds"""
     m, s = divmod(seconds, 60)
@@ -402,6 +411,8 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen,
                         records.write(" :: BAD\n")
             # wiki
             for sentence in wiki_sentences:
+                print('*'*80)
+                print("Wiki Sentence:\n%s" % sentence)
                 for sdp in sentence_to_sdps(sentence, include_ends=include_ends, min_len=minlen, max_len=maxlen):
                     records.write("%s" % json.dumps(sdp))
                     # convert from tokens to indices
@@ -411,6 +422,11 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen,
                     sdp['target'] = [ vocab2idx(t, vocab2int) for t in sdp['target'] ]
                     sdp['source'] = 'WIKI'
                     if is_ok_sdp(sdp, vocab2int, ok_dep_structures):
+                        x, y = [idx2vocab(t, int2vocab) for t in sdp['target']]
+                        p = [idx2vocab(t[0], int2vocab) for t in sdp['path']]
+                        print("Extracted SDP: <%s>, %s, <%s>" % (x, " ".join(p), y))
+                        q = raw_input("<Enter> Continue (q to quit)")
+                        if q == 'q': quit()
                         if single:
                             dup = {k:v[:] for k,v in sdp.items()} # duplicate
                             dup['path'] = dup['path'][::-1]       # reverse the path

@@ -85,7 +85,7 @@ class RelEmbed(object):
         self.hidden_layer_size = config['hidden_layer_size']
         self.input_size = self.word_embed_size + self.dep_embed_size + self.pos_embed_size
         self.bidirectional = config['bidirectional']
-        self.hidden_size = self.word_embed_size #config['hidden_size']
+        self.hidden_size = 2*self.word_embed_size #config['hidden_size']
         self.pretrained_word_embeddings = config['pretrained_word_embeddings'] # None if we don't provide them
         if np.any(self.pretrained_word_embeddings):
             assert self.word_embed_size == self.pretrained_word_embeddings.shape[1]
@@ -99,7 +99,7 @@ class RelEmbed(object):
         self.checkpoint_prefix = config['checkpoint_prefix'] + self.name
         self.summary_prefix = config['summary_prefix'] + self.name
         
-        self.initializer = tf.random_uniform_initializer(-1., 1.)
+        self.initializer = tf.random_uniform_initializer(-.1, .1)
         self.word_initializer = tf.truncated_normal_initializer(mean=0.0, stddev=1./(self.word_embed_size))
         self.dep_initializer = tf.truncated_normal_initializer(mean=0.0, stddev=1./(self.dep_embed_size))
         self.pos_initializer = tf.truncated_normal_initializer(mean=0.0, stddev=1./(self.pos_embed_size))
@@ -168,6 +168,9 @@ class RelEmbed(object):
                                                     [self.pos_vocab_size, self.pos_embed_size], 
                                                     initializer=self.pos_initializer,
                                                     dtype=tf.float32)
+
+            # normalize the embeddings at each run throught the graph
+            self._word_embeddings = tf.nn.l2_normalize(self._word_embeddings, 1)
             
             input_embeds = tf.nn.dropout(tf.nn.embedding_lookup(self._word_embeddings, 
                                                   tf.slice(self._input_phrases, [0,0,0], [-1, -1, 1])),
@@ -257,10 +260,10 @@ class RelEmbed(object):
             logits = tf.reduce_sum(tf.reshape(flat_logits, tf.pack([batch_size, -1])), 1)
            
             
-            self._l2_penalty = self._lambda*(tf.nn.l2_loss(self._gate_matrix)
-                                           + tf.nn.l2_loss(self._gate_bias)
-                                           + tf.nn.l2_loss(self._cand_matrix)
-                                           + tf.nn.l2_loss(self._cand_bias))
+            self._l2_penalty = 0#self._lambda*(tf.nn.l2_loss(self._gate_matrix)
+                                           #+ tf.nn.l2_loss(self._gate_bias)
+                                           #+ tf.nn.l2_loss(self._cand_matrix)
+                                           #+ tf.nn.l2_loss(self._cand_bias))
                                            # + tf.nn.l2_loss(self._word_embeddings))
                                                     #+tf.nn.l2_loss(self._dependency_embeddings)
                                                     # tf.nn.l2_loss(self._left_target_embeddings)
@@ -270,6 +273,8 @@ class RelEmbed(object):
                                                                     tf.to_float(self._input_labels)),
                                         name="neg_sample_loss")
             self._loss = self._xent + self._l2_penalty 
+
+            # self._word_embeddings = tf.nn.l2_normalize(self._word_embeddings, 1)
             
         with tf.name_scope("Summaries"):
             logit_mag = tf.histogram_summary("Logit_magnitudes", logits)
@@ -433,7 +438,7 @@ class RelEmbed(object):
         with tf.name_scope("Unsupervised_Trainer"):
             self._global_step = tf.Variable(0, name="global_step", trainable=False)
 #             self._lr = tf.Variable(1.0, trainable=False)
-            self._optimizer = tf.train.AdamOptimizer(.001)
+            self._optimizer = tf.train.AdamOptimizer(.0001)
             
             # clip and apply gradients
             grads_and_vars = self._optimizer.compute_gradients(self._loss)
@@ -457,7 +462,7 @@ class RelEmbed(object):
         with tf.name_scope("Classification_Trainer"):
             self._class_global_step = tf.Variable(0, name="class_global_step", trainable=False)
 #             self._lr = tf.Variable(1.0, trainable=False)
-            self._class_optimizer = tf.train.AdamOptimizer(.001)
+            self._class_optimizer = tf.train.AdamOptimizer(.0001)
             
             # clip and apply gradients
             grads_and_vars = self._class_optimizer.compute_gradients(self._class_loss)
@@ -568,11 +573,17 @@ class RelEmbed(object):
             
         with tf.name_scope("Similarities"):
             with tf.name_scope("Normalize"):
+                ### use targets in sim comparison
+#                 query_phrase = tf.nn.l2_normalize(tf.concat(1, [query_phrase_state, q_target_embed]), 1)
+# #                 query_word = tf.nn.l2_normalize(query_word_embed, 1)
+#                 sim_phrases = tf.nn.l2_normalize(tf.concat(1, [sim_phrase_states, sim_target_embeds]), 1)
+# #                 sim_word = tf.nn.l2_normalize(sim_word_embed, 1)   
 
-                query_phrase = tf.nn.l2_normalize(tf.concat(1, [query_phrase_state, q_target_embed]), 1)
+                # don't use target embeds in similarity 
+                query_phrase = tf.nn.l2_normalize(tf.concat(1, [query_phrase_state]), 1)
 #                 query_word = tf.nn.l2_normalize(query_word_embed, 1)
-                sim_phrases = tf.nn.l2_normalize(tf.concat(1, [sim_phrase_states, sim_target_embeds]), 1)
-#                 sim_word = tf.nn.l2_normalize(sim_word_embed, 1)                
+                sim_phrases = tf.nn.l2_normalize(tf.concat(1, [sim_phrase_states]), 1)
+#                 sim_word = tf.nn.l2_normalize(sim_word_embed, 1)              
 
             with tf.name_scope("Calc_distances"):
                 # do for words
@@ -590,7 +601,7 @@ class RelEmbed(object):
                 self.qp_nearby_val = tf.squeeze(qp_nearby_val)
                 self.qp_nearby_idx = tf.squeeze(qp_nearby_idx)
 #                 self.qp_nearby_lens = tf.squeeze(tf.gather(self._sim_lengths, qp_nearby_idx))
-            
+
     def partial_class_fit(self, input_phrases, input_targets, class_labels, input_lengths, keep_prob=.5):
         """Fit a mini-batch
         
@@ -710,7 +721,7 @@ class RelEmbed(object):
             return list(predictions)
             
     def checkpoint(self):
-        if not config['supervised']:
+        if not self.config['supervised']:
             save_name = (self.checkpoint_prefix + '.ckpt-'+str(self._global_step.eval()))
         else:
             save_name = (self.checkpoint_prefix + '.ckpt-'+str(self._global_step.eval())+'-'+str(self._class_global_step.eval()))

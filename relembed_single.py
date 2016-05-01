@@ -65,6 +65,7 @@ class RelEmbed(object):
         self.hidden_layer_size = config['hidden_layer_size']
         self.input_size = self.word_embed_size + self.dep_embed_size + self.pos_embed_size
         self.bidirectional = config['bidirectional']
+        self.num_clusters = config['num_clusters']
         self.hidden_size = self.word_embed_size #config['hidden_size']
         self.pretrained_word_embeddings = config['pretrained_word_embeddings'] # None if we don't provide them
         if np.any(self.pretrained_word_embeddings):
@@ -81,7 +82,7 @@ class RelEmbed(object):
         self.checkpoint_prefix = config['checkpoint_prefix'] + self.name
         self.summary_prefix = config['summary_prefix'] + self.name
         
-        self.initializer = tf.random_uniform_initializer(-1., 1.)
+        self.initializer = tf.random_uniform_initializer(-.1, .1)
         self.word_initializer = tf.truncated_normal_initializer(mean=0.0, stddev=1./(self.word_embed_size))
         self.dep_initializer = tf.truncated_normal_initializer(mean=0.0, stddev=1./(self.dep_embed_size))
         self.pos_initializer = tf.truncated_normal_initializer(mean=0.0, stddev=1./(self.pos_embed_size))
@@ -128,16 +129,17 @@ class RelEmbed(object):
         with tf.name_scope("Embeddings"):
             if np.any(self.pretrained_word_embeddings):
                 self._word_embeddings = tf.Variable(self.pretrained_word_embeddings,name="word_embeddings")
-                self._left_target_embeddings = tf.Variable(self.pretrained_word_embeddings, name="left_target_embeddings")
+                self._target_embeddings = tf.Variable(self.pretrained_word_embeddings, name="left_target_embeddings")
                 self._right_target_embeddings = tf.Variable(self.pretrained_word_embeddings, name="right_target_embeddings")
             else:
                 self._word_embeddings = tf.get_variable("word_embeddings", 
                                                         [self.vocab_size, self.word_embed_size], 
                                                     initializer=self.word_initializer,
                                                         dtype=tf.float32)
-                self._target_embeddings = tf.get_variable("left_target_embeddings", 
+                self._target_embeddings = tf.get_variable("target_embeddings", 
                                                         [self.vocab_size, self.word_embed_size], 
                                                     initializer=self.word_initializer,
+                                                    trainable=False,
                                                         dtype=tf.float32)
             
             self._dependency_embeddings = tf.get_variable("dependency_embeddings", 
@@ -148,6 +150,12 @@ class RelEmbed(object):
                                                     [self.pos_vocab_size, self.pos_embed_size], 
                                                     initializer=self.pos_initializer,
                                                     dtype=tf.float32)
+            # renormalize every turn
+            self._target_embeddings - tf.nn.l2_normalize(self._target_embeddings, 1)
+
+            # perform a task-specific transform of the rnn
+            rnn_w = tf.get_variable("rnn_w", [self.hidden_size, self.hidden_size],
+                                    dtype=tf.float32)
             
             input_embeds = tf.nn.dropout(tf.nn.embedding_lookup(self._word_embeddings, 
                                                   tf.slice(self._input_phrases, [0,0,0], [-1, -1, 1])),
@@ -166,12 +174,12 @@ class RelEmbed(object):
             #                                             tf.slice(self._input_targets, [0,1], [-1, 1])),
             #                                      keep_prob=self._keep_prob)
             # no delay dropout so we can tanh it first
-            # left_target_embeds = tf.nn.embedding_lookup(self._left_target_embeddings, 
-            #                                             tf.slice(self._input_targets, [0,0], [-1, 1]))
+            # left_target_embeds = tf.nn.embedding_lookup(self._target_embeddings, 
+                                                        # tf.slice(self._input_targets, [0,0], [-1, 1]))
             # right_target_embeds = tf.nn.embedding_lookup(self._right_target_embeddings, 
             #                                             tf.slice(self._input_targets, [0,1], [-1, 1]))
             ### ALL SAME EMBEDDING MATRIX ###
-            self._target_embeds = tf.nn.embedding_lookup(self._word_embeddings, 
+            self._target_embeds = tf.nn.embedding_lookup(self._target_embeddings, 
                                                         tf.slice(self._input_targets, [0,0], [-1, 1]))
 
 #             print(tf.slice(self._input_phrases, [0,0,1], [-1, -1, 1]).get_shape(), dep_embeds.get_shape())
@@ -179,6 +187,8 @@ class RelEmbed(object):
             # self._target_embeds = tf.squeeze(tf.concat(2, [left_target_embeds, right_target_embeds]), [1])
             # self._target_embeds = tf.nn.dropout(tf.nn.l2_normalize(self._target_embeds, 1 ), keep_prob=self._keep_prob)
             self._target_embeds = tf.nn.dropout(tf.squeeze(self._target_embeds, [1]), keep_prob=self._keep_prob)
+            # self._target_embeds = tf.squeeze(self._target_embeds, [1])
+
             print(self._target_embeds.get_shape())
             # TODO: Add dropout to embeddings
         
@@ -194,7 +204,6 @@ class RelEmbed(object):
                        for (input_word, input_dep, input_pos_) in zip(input_words, input_deps, input_pos)]
 
             # inputs = input_words # just use words
-
             # start off with a basic configuration
             if self.bidirectional:
                 self.fwcell = tf.nn.rnn_cell.GRUCell(self.hidden_size, 
@@ -210,14 +219,17 @@ class RelEmbed(object):
                     x_outs, x_state = tf.nn.rnn(self.bwcell, inputs, 
                                      sequence_length=tf.squeeze(self._input_lengths, [1]),
                                      dtype=tf.float32, scope=scope)
-                print(len(x_outs), self.max_num_steps)
+                # print(len(x_outs), self.max_num_steps)
                 # final out only
-                # choose_x_y = tf.select(tf.cast(tf.squeeze(self._input_predict_x, [1]), tf.bool), x_state, y_state)
-                # self._final_state = tf.nn.dropout(choose_x_y, keep_prob=self._keep_prob)
-                # all outs
-                choose_x_y = tf.concat(0, [tf.select(tf.cast(tf.squeeze(self._input_predict_x, [1]), tf.bool), x, y)
-                              for (x,y) in zip(x_outs, y_outs)])
-                self._final_states = tf.nn.dropout(choose_x_y, keep_prob=self._keep_prob) 
+                #TODO: Make sure squeeez isn't fucking it up (pretty sure it's not)
+                choose_x_y = tf.select(tf.cast(tf.squeeze(self._input_predict_x, [1]), tf.bool), x_state, y_state)
+                # choose_x_y = tf.matmul(choose_x_y, rnn_w)
+                self._final_states = tf.nn.dropout(choose_x_y, keep_prob=self._keep_prob)
+                # self._final_states = choose_x_y
+                # # all outs
+                # choose_x_y = tf.concat(0, [tf.select(tf.cast(tf.squeeze(self._input_predict_x, [1]), tf.bool), x, y)
+                #               for (x,y) in zip(x_outs, y_outs)])
+                # self._final_states = tf.nn.dropout(choose_x_y, keep_prob=self._keep_prob) 
                 # self._final_state = tf.nn.dropout(tf.concat(1, [x_state, y_state]), keep_prob=self._keep_prob)
                 # print(self._final_state.get_shape())
             else:
@@ -241,44 +253,60 @@ class RelEmbed(object):
         # self._lambda2 = tf.Variable(10e-6, trainable=False, name="L2_Lambda2")
         self._lambda = tf.Variable(10e-7, trainable=False, name="L2_Lambda")
         with tf.name_scope("Loss"):
-            # final state only
-            # flat_states = tf.reshape(self._final_state, [-1])
-            # flat_target_embeds = tf.reshape(self._target_embeds, [-1])
-            # flat_logits = tf.mul(flat_states, flat_target_embeds)
-            # logits = tf.reduce_sum(tf.reshape(flat_logits, tf.pack([batch_size, -1])), 1)
+            ### CLUSTERED ###
+            # self._cluster_input = self._final_states
+            # self._clusters_w =  tf.get_variable("clusters_w", [self._cluster_input.get_shape()[1], self.num_clusters**2])
+            # self._clusters_b = tf.Variable(tf.zeros([self.num_clusters**2], dtype=tf.float32), name="clusters_b")   
 
-            # all states
+            # logits = tf.matmul(self._cluster_input, self._clusters_w) + self._clusters_b
+
+            # self._xent = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits, 
+            #                                      tf.to_int64(tf.squeeze(self._input_labels, [1]))))        
+            
+            # self._l2_penalty = self._lambda*(tf.nn.l2_loss(self._clusters_w)
+            #                                + tf.nn.l2_loss(self._clusters_b))
+            # self._loss = self._xent + self._l2_penalty 
+            ### NEGATIVE SAMPLED INNER PRODUCT ###
+            # final state only
             flat_states = tf.reshape(self._final_states, [-1])
-            flat_target_embeds = tf.reshape(tf.tile(self._target_embeds, [self.max_num_steps, 1]), 
-                                            [-1])
+            flat_target_embeds = tf.reshape(self._target_embeds, [-1])
             flat_logits = tf.mul(flat_states, flat_target_embeds)
-            logits = tf.reduce_sum(tf.reshape(flat_logits, 
-                                               tf.pack([batch_size*self.max_num_steps, -1])), 
-                                    1)
+            logits = tf.reduce_sum(tf.reshape(flat_logits, tf.pack([batch_size, -1])), 1)
+
+            # # all states
+            # # flat_states = tf.reshape(self._final_states, [-1])
+            # # flat_target_embeds = tf.reshape(tf.tile(self._target_embeds, [self.max_num_steps, 1]), 
+            # #                                 [-1])
+            # # flat_logits = tf.mul(flat_states, flat_target_embeds)
+            # # logits = tf.reduce_sum(tf.reshape(flat_logits, 
+            # #                                    tf.pack([batch_size*self.max_num_steps, -1])), 
+            # #                         1)
            
             
-            self._l2_penalty = 0#self._lambda*(tf.nn.l2_loss(self._gate_matrix)
-                                #           + tf.nn.l2_loss(self._gate_bias)
-                                #           + tf.nn.l2_loss(self._cand_matrix)
-                                #           + tf.nn.l2_loss(self._cand_bias))
-                                           # + tf.nn.l2_loss(self._word_embeddings))
-                                                    #+tf.nn.l2_loss(self._dependency_embeddings)
-                                                    # tf.nn.l2_loss(self._left_target_embeddings)
-                                                    # +tf.nn.l2_loss(self._right_target_embeddings))
-            tile_labels = tf.tile(self._input_labels, [self.max_num_steps, 1])
+            self._l2_penalty = self._lambda*(tf.nn.l2_loss(self._target_embeds)
+                                            +tf.nn.l2_loss(rnn_w))
+            #tf.nn.l2_loss(self._gate_matrix)
+            #                     #           + tf.nn.l2_loss(self._gate_bias)
+            #                     #           + tf.nn.l2_loss(self._cand_matrix)
+            #                     #           + tf.nn.l2_loss(self._cand_bias))
+            #                                # + tf.nn.l2_loss(self._word_embeddings))
+            #                                         #+tf.nn.l2_loss(self._dependency_embeddings)
+            #                                         # tf.nn.l2_loss(self._left_target_embeddings)
+            #                                         # +tf.nn.l2_loss(self._right_target_embeddings))
+            # # tile_labels = tf.tile(self._input_labels, [self.max_num_steps, 1])
             self._xent = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits, 
-                                                                    tf.to_float(tile_labels))
+                                                                    tf.to_float(self._input_labels))
                                         ,name="neg_sample_loss")
-            self._loss = self._xent #+ self._l2_penalty 
+            self._loss = self._xent + self._l2_penalty 
             
         with tf.name_scope("Summaries"):
-            # logit_mag = tf.histogram_summary("Logit_magnitudes", logits)
-            # l2 = tf.scalar_summary("L2_penalty", self._l2_penalty)
+            logit_mag = tf.histogram_summary("Logit_magnitudes", logits)
+            l2 = tf.scalar_summary("L2_penalty", self._l2_penalty)
             ### find the l2 squared losses of each vector
             xent = tf.scalar_summary("Sigmoid_xent", self._xent)
             target_embed_mag = tf.histogram_summary("Target_Embed_L2", tf.reduce_sum(self._target_embeds**2, 1)/2.)
             state_mag = tf.histogram_summary("RNN_final_state_L2", tf.reduce_sum(self._final_states**2, 1)/2.)
-            self._penalty_summary = tf.merge_summary([xent, target_embed_mag, state_mag])#logit_mag, l2, xent, target_embed_mag, state_mag])
+            self._penalty_summary = tf.merge_summary([xent, target_embed_mag, state_mag, logit_mag, l2])
             self._train_cost_summary = tf.merge_summary([tf.scalar_summary("Train_NEG_Loss", self._loss)])
             self._valid_cost_summary = tf.merge_summary([tf.scalar_summary("Validation_NEG_Loss", self._loss)])
         
@@ -512,7 +540,7 @@ class RelEmbed(object):
         with tf.name_scope("Unsupervised_Trainer"):
             self._global_step = tf.Variable(0, name="global_step", trainable=False)
 #             self._lr = tf.Variable(1.0, trainable=False)
-            self._optimizer = tf.train.AdamOptimizer(.01)
+            self._optimizer = tf.train.AdamOptimizer(.001)
             
             # clip and apply gradients
             grads_and_vars = self._optimizer.compute_gradients(self._loss)
@@ -536,7 +564,7 @@ class RelEmbed(object):
         with tf.name_scope("Classification_Trainer"):
             self._class_global_step = tf.Variable(0, name="class_global_step", trainable=False)
 #             self._lr = tf.Variable(1.0, trainable=False)
-            self._class_optimizer = tf.train.AdamOptimizer(.01)
+            self._class_optimizer = tf.train.AdamOptimizer(.001)
             
             # clip and apply gradients
             grads_and_vars = self._class_optimizer.compute_gradients(self._class_loss)
@@ -579,7 +607,7 @@ class RelEmbed(object):
                                                 tf.slice(self._query_phrase, [0,1], [-1, 1]))
             query_pos_embed = tf.nn.embedding_lookup(self._pos_embeddings,
                                                 tf.slice(self._query_phrase, [0,2], [-1, 1]))
-            q_target_embed = tf.nn.embedding_lookup(self._left_target_embeddings, 
+            q_target_embed = tf.nn.embedding_lookup(self._target_embeddings, 
                                                         tf.slice(self._query_target, [0,0], [-1, 1]))
             q_target_embed = tf.squeeze(q_target_embed, [1])
 #             query_word_embed = tf.nn.embedding_lookup(self._word_embeddings, self._query_word)
@@ -591,7 +619,7 @@ class RelEmbed(object):
                                                   tf.slice(self._sim_phrases, [0, 0, 1], [-1, -1, 1]))
             sim_pos_embed = tf.nn.embedding_lookup(self._pos_embeddings, 
                                                   tf.slice(self._sim_phrases, [0, 0, 2], [-1, -1, 1]))
-            sim_target_embeds = tf.nn.embedding_lookup(self._left_target_embeddings, 
+            sim_target_embeds = tf.nn.embedding_lookup(self._target_embeddings, 
                                                         tf.slice(self._sim_targets, [0,0], [-1, 1]))
             sim_target_embeds = tf.squeeze(sim_target_embeds, [1])
         
@@ -717,7 +745,7 @@ class RelEmbed(object):
                   
         Returns average batch perplexity
         """
-        loss, _, g_summaries, c_summary, p_summary = self.session.run([self._loss, self._train_op, 
+        loss, xent, _, g_summaries, c_summary, p_summary = self.session.run([self._loss, self._xent, self._train_op, 
                                                             self._grad_summaries,
                                                             self._train_cost_summary,
                                                             self._penalty_summary],
@@ -730,7 +758,7 @@ class RelEmbed(object):
         self.summary_writer.add_summary(g_summaries)
         self.summary_writer.add_summary(c_summary)
         self.summary_writer.add_summary(p_summary)
-        return loss
+        return loss, xent
     
     def validation_loss(self, valid_phrases, valid_targets,     
                         valid_labels, valid_lengths, valid_predict_x):

@@ -222,6 +222,9 @@ class DataHandler(object):
             all_inputs = np.vstack((input_mat, neg_mat)).astype(np.int32)
             all_targets = np.vstack((targets, np.array(neg_targets))).astype(np.int32).reshape([-1, self._target_len])
             all_labels = np.vstack((labels, neg_labels)).astype(np.int32)
+            # print(zip(list(all_targets.reshape((-1))), list(all_labels.reshape((-1)))))
+            # print(input_mat[:,:, 0])
+            # print(neg_mat[:,:,0])
             all_lengths = np.vstack((len_vec, neg_len)).astype(np.int32)
             all_pred_x = np.vstack((predict_x, neg_pred_x)).astype(np.int32)
         else:
