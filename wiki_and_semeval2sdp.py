@@ -425,8 +425,8 @@ def main(num_sentences, min_count, vocab_limit, infile, outfile, minlen, maxlen,
                         x, y = [idx2vocab(t, int2vocab) for t in sdp['target']]
                         p = [idx2vocab(t[0], int2vocab) for t in sdp['path']]
                         print("Extracted SDP: <%s>, %s, <%s>" % (x, " ".join(p), y))
-                        q = raw_input("<Enter> Continue (q to quit)")
-                        if q == 'q': quit()
+                        # q = raw_input("<Enter> Continue (q to quit)")
+                        # if q == 'q': quit()
                         if single:
                             dup = {k:v[:] for k,v in sdp.items()} # duplicate
                             dup['path'] = dup['path'][::-1]       # reverse the path
